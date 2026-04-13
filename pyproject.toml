@@ -1,0 +1,10 @@
+[project]
+name = "voice-tutor"
+version = "0.1.0"
+description = "Self-hosted voice conversation service with Claude and persistent memory"
+requires-python = ">=3.12"
+dependencies = [
+    "pipecat-ai[anthropic,deepgram,cartesia,silero,webrtc,runner]",
+    "pipecat-ai-small-webrtc-prebuilt",
+    "python-dotenv",
+]
