@@ -19,14 +19,60 @@ from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.transports.base_transport import TransportParams
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 
-TRANSCRIPTS_DIR = Path.home() / ".voice-tutor" / "transcripts"
+VOICE_TUTOR_DIR = Path.home() / ".voice-tutor"
+TRANSCRIPTS_DIR = VOICE_TUTOR_DIR / "transcripts"
+PROFILE_PATH = VOICE_TUTOR_DIR / "profile.md"
+RECENT_TRANSCRIPT_COUNT = 3
 
-SYSTEM_INSTRUCTION = (
+BASE_INSTRUCTION = (
     "You are a friendly, curious conversational partner. "
     "Keep responses concise and natural for voice — "
-    "a few sentences at most unless asked for detail. "
-    "Be warm but not sycophantic."
+    "one to three sentences at most unless asked for detail. "
+    "Be warm but not sycophantic. Never repeat yourself within a response. "
+    "You know the person you're talking to from prior conversations. "
+    "Reference past topics naturally when relevant, but don't force it."
 )
+
+
+def load_profile() -> str:
+    if PROFILE_PATH.exists():
+        return PROFILE_PATH.read_text()
+    return ""
+
+
+def load_recent_transcripts() -> list[dict]:
+    if not TRANSCRIPTS_DIR.exists():
+        return []
+    files = sorted(TRANSCRIPTS_DIR.glob("*.json"), reverse=True)[:RECENT_TRANSCRIPT_COUNT]
+    transcripts = []
+    for f in files:
+        transcripts.append(json.loads(f.read_text()))
+    return list(reversed(transcripts))  # chronological order
+
+
+def format_transcript_summary(transcript: dict) -> str:
+    date = transcript["session_start"][:10]
+    lines = []
+    for turn in transcript["turns"]:
+        role = "You" if turn["role"] == "assistant" else "Matt"
+        lines.append(f"  {role}: {turn['content']}")
+    return f"Conversation on {date}:\n" + "\n".join(lines)
+
+
+def build_system_instruction() -> str:
+    parts = [BASE_INSTRUCTION]
+
+    profile = load_profile()
+    if profile:
+        parts.append(f"\n## About the person you're talking to\n\n{profile}")
+
+    transcripts = load_recent_transcripts()
+    if transcripts:
+        parts.append("\n## Recent conversations\n")
+        for t in transcripts:
+            parts.append(format_transcript_summary(t))
+
+    return "\n".join(parts)
 
 
 async def bot(runner_args):
@@ -40,11 +86,13 @@ async def bot(runner_args):
         settings=DeepgramSTTService.Settings(model="nova-3", language="en"),
     )
 
+    system_instruction = build_system_instruction()
+
     llm = AnthropicLLMService(
         api_key=os.getenv("ANTHROPIC_API_KEY"),
         settings=AnthropicLLMService.Settings(
             model="claude-sonnet-4-5-20250929",
-            system_instruction=SYSTEM_INSTRUCTION,
+            system_instruction=system_instruction,
             enable_prompt_caching=True,
             max_tokens=1024,
             temperature=0.7,
