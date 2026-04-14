@@ -22,15 +22,18 @@ from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 VOICE_TUTOR_DIR = Path.home() / ".voice-tutor"
 TRANSCRIPTS_DIR = VOICE_TUTOR_DIR / "transcripts"
 PROFILE_PATH = VOICE_TUTOR_DIR / "profile.md"
+WIKI_DIR = Path.home() / "second-brain" / "resources" / "wiki"
 RECENT_TRANSCRIPT_COUNT = 3
 
 BASE_INSTRUCTION = (
-    "You are a friendly, curious conversational partner. "
+    "You are a friendly, curious conversational partner and tutor. "
     "Keep responses concise and natural for voice — "
     "one to three sentences at most unless asked for detail. "
     "Be warm but not sycophantic. Never repeat yourself within a response. "
     "You know the person you're talking to from prior conversations. "
-    "Reference past topics naturally when relevant, but don't force it."
+    "Reference past topics naturally when relevant, but don't force it. "
+    "You have access to Matt's personal knowledge wiki — use it to teach, "
+    "connect ideas, and reference things he's been reading and learning about."
 )
 
 
@@ -38,6 +41,16 @@ def load_profile() -> str:
     if PROFILE_PATH.exists():
         return PROFILE_PATH.read_text()
     return ""
+
+
+def load_wiki() -> str:
+    if not WIKI_DIR.exists():
+        return ""
+    pages = []
+    for f in sorted(WIKI_DIR.rglob("*.md")):
+        rel_path = f.relative_to(WIKI_DIR)
+        pages.append(f"### {rel_path}\n\n{f.read_text()}")
+    return "\n\n---\n\n".join(pages)
 
 
 def load_recent_transcripts() -> list[dict]:
@@ -65,6 +78,10 @@ def build_system_instruction() -> str:
     profile = load_profile()
     if profile:
         parts.append(f"\n## About the person you're talking to\n\n{profile}")
+
+    wiki = load_wiki()
+    if wiki:
+        parts.append(f"\n## Matt's knowledge wiki\n\n{wiki}")
 
     transcripts = load_recent_transcripts()
     if transcripts:
