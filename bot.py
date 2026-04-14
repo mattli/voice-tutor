@@ -1,4 +1,7 @@
+import json
 import os
+from datetime import datetime
+from pathlib import Path
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import LLMRunFrame
@@ -15,6 +18,8 @@ from pipecat.services.cartesia.tts import CartesiaTTSService
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.transports.base_transport import TransportParams
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
+
+TRANSCRIPTS_DIR = Path.home() / ".voice-tutor" / "transcripts"
 
 SYSTEM_INSTRUCTION = (
     "You are a friendly, curious conversational partner. "
@@ -74,6 +79,39 @@ async def bot(runner_args):
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
     )
 
+    # Transcript accumulation
+    session_start = datetime.now()
+    turns: list[dict] = []
+
+    @user_aggregator.event_handler("on_user_turn_stopped")
+    async def on_user_turn_stopped(aggregator, strategy, message):
+        turns.append({
+            "role": "user",
+            "content": message.content,
+            "timestamp": message.timestamp,
+        })
+
+    @assistant_aggregator.event_handler("on_assistant_turn_stopped")
+    async def on_assistant_turn_stopped(aggregator, message):
+        turns.append({
+            "role": "assistant",
+            "content": message.content,
+            "timestamp": message.timestamp,
+        })
+
+    def save_transcript():
+        if not turns:
+            return
+        TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+        filename = session_start.strftime("%Y-%m-%d-%H%M%S") + ".json"
+        transcript = {
+            "session_start": session_start.isoformat(),
+            "session_end": datetime.now().isoformat(),
+            "turn_count": len(turns),
+            "turns": turns,
+        }
+        (TRANSCRIPTS_DIR / filename).write_text(json.dumps(transcript, indent=2))
+
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         context.add_message({"role": "user", "content": "Say hello and introduce yourself briefly."})
@@ -81,6 +119,7 @@ async def bot(runner_args):
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
+        save_transcript()
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
