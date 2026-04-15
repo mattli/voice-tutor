@@ -4,8 +4,13 @@ from datetime import datetime
 from pathlib import Path
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMRunFrame, MetricsFrame
-from pipecat.metrics.metrics import LLMUsageMetricsData, TTSUsageMetricsData
+from pipecat.frames.frames import (
+    InputAudioRawFrame,
+    LLMRunFrame,
+    MetricsFrame,
+    TTSAudioRawFrame,
+)
+from pipecat.metrics.metrics import LLMUsageMetricsData
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -21,24 +26,23 @@ from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.transports.base_transport import TransportParams
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 
-# Prices verified 2026-04-14 from official pricing pages.
-# Anthropic: https://claude.com/pricing
-# Deepgram: https://deepgram.com/pricing
-# Cartesia: https://cartesia.ai/pricing
+# Prices last verified 2026-04-15 against official pricing pages and
+# cross-checked with the 2026-04-14 session's provider dashboards.
+# Sources: claude.com/pricing, deepgram.com/pricing, cartesia.ai/pricing.
 PRICE_ANTHROPIC_INPUT_PER_MTOK = 3.00
 PRICE_ANTHROPIC_OUTPUT_PER_MTOK = 15.00
 PRICE_ANTHROPIC_CACHE_WRITE_PER_MTOK = 3.75
 PRICE_ANTHROPIC_CACHE_READ_PER_MTOK = 0.30
 PRICE_DEEPGRAM_NOVA3_PER_MIN = 0.0077
-# Cartesia charges 15 credits per second of audio on PAYG. Pipecat only emits
-# character count, not audio seconds, so estimate audio duration from chars.
-# Typical neural TTS produces ~14 chars per second of audio at normal pace.
-# Pro plan ($5/mo billed monthly) includes 100K credits ≈ 1.85 hours/mo.
-# Overage rate not listed on pricing page; treating Pro as a flat per-credit
-# cost at $5 / 100_000 credits = $0.00005/credit.
-CHARS_PER_SEC_TTS = 14
+# Cartesia: 15 credits/sec of audio; $5 / 100_000 credits on Pro plan.
+# Actual audio seconds now derived from TTSAudioRawFrame bytes (ground truth),
+# not estimated from char count.
 CARTESIA_CREDITS_PER_SEC = 15
 PRICE_CARTESIA_PER_CREDIT = 5.00 / 100_000
+
+# NOTE: cost-log.jsonl starts from the first session after this refactor
+# (2026-04-15+). Sessions logged before this (e.g. 2026-04-14) only exist as
+# rows in cost-log.md — there's no raw usage data to backfill for them.
 
 
 class UsageAccumulator(BaseObserver):
@@ -48,22 +52,34 @@ class UsageAccumulator(BaseObserver):
         self.cache_read_tokens = 0
         self.cache_write_tokens = 0
         self.output_tokens = 0
-        self.tts_chars = 0
+        self.tts_audio_sec = 0.0
+        # Cross-check against session_duration_sec; divergence would signal a
+        # transport behavior change (e.g. VAD-gated audio_in).
+        self.stt_audio_sec = 0.0
 
     async def on_push_frame(self, data: FramePushed):
-        if not isinstance(data.frame, MetricsFrame):
+        frame = data.frame
+        # TTSAudioRawFrame check must precede InputAudioRawFrame because
+        # both inherit from AudioRawFrame — TTS is output, STT is input.
+        if isinstance(frame, TTSAudioRawFrame):
+            denom = frame.sample_rate * max(frame.num_channels, 1) * 2
+            if denom:
+                self.tts_audio_sec += len(frame.audio) / denom
             return
-        for m in data.frame.data:
-            if isinstance(m, LLMUsageMetricsData):
-                u = m.value
-                cache_read = u.cache_read_input_tokens or 0
-                cache_write = u.cache_creation_input_tokens or 0
-                self.cache_read_tokens += cache_read
-                self.cache_write_tokens += cache_write
-                self.uncached_input_tokens += u.prompt_tokens - cache_read - cache_write
-                self.output_tokens += u.completion_tokens
-            elif isinstance(m, TTSUsageMetricsData):
-                self.tts_chars += m.value
+        if isinstance(frame, InputAudioRawFrame):
+            denom = frame.sample_rate * max(frame.num_channels, 1) * 2
+            if denom:
+                self.stt_audio_sec += len(frame.audio) / denom
+            return
+        if isinstance(frame, MetricsFrame):
+            for m in frame.data:
+                if isinstance(m, LLMUsageMetricsData):
+                    u = m.value
+                    self.cache_read_tokens += u.cache_read_input_tokens or 0
+                    self.cache_write_tokens += u.cache_creation_input_tokens or 0
+                    # Anthropic's prompt_tokens already excludes cache reads/writes.
+                    self.uncached_input_tokens += u.prompt_tokens
+                    self.output_tokens += u.completion_tokens
 
     def summary(self, session_duration_sec: float) -> dict:
         llm_input_cost = self.uncached_input_tokens / 1_000_000 * PRICE_ANTHROPIC_INPUT_PER_MTOK
@@ -72,13 +88,14 @@ class UsageAccumulator(BaseObserver):
         llm_output_cost = self.output_tokens / 1_000_000 * PRICE_ANTHROPIC_OUTPUT_PER_MTOK
         llm_cost = llm_input_cost + llm_cache_read_cost + llm_cache_write_cost + llm_output_cost
 
-        # STT billed per minute of audio streamed; approximate with session duration.
+        # Deepgram bills per minute of audio streamed over the open connection.
+        # SmallWebRTCTransport streams continuously, so session_duration_sec is
+        # ground-truth for billing. stt_audio_sec is an observed cross-check —
+        # should match within rounding; divergence signals a transport change.
         stt_minutes = session_duration_sec / 60
         stt_cost = stt_minutes * PRICE_DEEPGRAM_NOVA3_PER_MIN
 
-        # TTS: estimate audio seconds from char count, then credits, then cost.
-        tts_audio_sec = self.tts_chars / CHARS_PER_SEC_TTS
-        tts_credits = tts_audio_sec * CARTESIA_CREDITS_PER_SEC
+        tts_credits = self.tts_audio_sec * CARTESIA_CREDITS_PER_SEC
         tts_cost = tts_credits * PRICE_CARTESIA_PER_CREDIT
 
         total = llm_cost + stt_cost + tts_cost
@@ -93,12 +110,12 @@ class UsageAccumulator(BaseObserver):
             },
             "stt": {
                 "minutes": round(stt_minutes, 2),
+                "audio_sec_observed": round(self.stt_audio_sec, 1),
                 "cost_usd": round(stt_cost, 4),
             },
             "tts": {
-                "chars": self.tts_chars,
-                "est_audio_sec": round(tts_audio_sec, 1),
-                "est_credits": round(tts_credits, 0),
+                "audio_sec": round(self.tts_audio_sec, 1),
+                "credits": round(tts_credits, 0),
                 "cost_usd": round(tts_cost, 4),
             },
             "total_cost_usd": round(total, 4),
@@ -108,7 +125,8 @@ VOICE_TUTOR_DIR = Path.home() / ".voice-tutor"
 TRANSCRIPTS_DIR = VOICE_TUTOR_DIR / "transcripts"
 PROFILE_PATH = VOICE_TUTOR_DIR / "profile.md"
 WIKI_DIR = Path.home() / "second-brain" / "resources" / "wiki"
-COST_LOG_PATH = Path.home() / "second-brain" / "projects" / "products" / "voice-tutor" / "cost-log.md"
+COST_LOG_PATH = Path.home() / "second-brain" / "products" / "voice-tutor" / "cost-log.md"
+COST_LOG_JSONL_PATH = COST_LOG_PATH.with_suffix(".jsonl")
 RECENT_TRANSCRIPT_COUNT = 3
 
 BASE_INSTRUCTION = (
@@ -282,7 +300,11 @@ async def bot(runner_args):
         if not COST_LOG_PATH.exists():
             COST_LOG_PATH.write_text(
                 "# Voice Tutor — Cost Log\n\n"
-                "One row per session. Costs are estimated (see README).\n\n"
+                "One row per session. Costs are computed from ground-truth usage\n"
+                "(TTS audio bytes, LLM token counts, Deepgram streamed minutes).\n"
+                "Rates last verified 2026-04-15 against provider pricing pages.\n"
+                "Per-session raw usage is logged to `cost-log.jsonl` for auditing\n"
+                "(starting 2026-04-15 — earlier sessions have no raw-usage sidecar).\n\n"
                 "| Session start | Duration | Turns | Total | LLM | STT | TTS |\n"
                 "|---|---|---|---|---|---|---|\n"
             )
@@ -297,6 +319,28 @@ async def bot(runner_args):
         )
         with COST_LOG_PATH.open("a") as f:
             f.write(row)
+
+        jsonl_entry = {
+            "session_id": session_start.strftime("%Y-%m-%dT%H%M%S"),
+            "session_start": session_start.isoformat(),
+            "session_end": session_end.isoformat(),
+            "session_duration_sec": summary["session_duration_sec"],
+            "turns": len(turns),
+            "tts_audio_sec": summary["tts"]["audio_sec"],
+            "tts_credits": summary["tts"]["credits"],
+            "stt_audio_sec_observed": summary["stt"]["audio_sec_observed"],
+            "stt_minutes_billed": summary["stt"]["minutes"],
+            "llm_uncached_input_tokens": summary["llm"]["uncached_input_tokens"],
+            "llm_cache_read_tokens": summary["llm"]["cache_read_tokens"],
+            "llm_cache_write_tokens": summary["llm"]["cache_write_tokens"],
+            "llm_output_tokens": summary["llm"]["output_tokens"],
+            "cost_llm_usd": summary["llm"]["cost_usd"],
+            "cost_stt_usd": summary["stt"]["cost_usd"],
+            "cost_tts_usd": summary["tts"]["cost_usd"],
+            "cost_total_usd": summary["total_cost_usd"],
+        }
+        with COST_LOG_JSONL_PATH.open("a") as f:
+            f.write(json.dumps(jsonl_entry) + "\n")
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
