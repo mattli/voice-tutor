@@ -51,3 +51,21 @@ Stored at `~/.voice-tutor/`:
 
 - `profile.md` — hand-maintained identity profile, loaded into system prompt
 - `transcripts/` — JSON transcripts saved on session disconnect, last 3 loaded at session start
+- `transcripts/<session>.usage.json` — per-session cost breakdown sidecar (see below)
+
+## Usage telemetry
+
+When a session ends, the bot writes a sidecar `<session>.usage.json` next to the transcript with token counts, TTS characters, estimated audio minutes, and an estimated USD cost broken down by LLM / STT / TTS. It also:
+
+- prints a one-line summary to the bot log
+- appends a row to the session cost log at `~/second-brain/projects/products/voice-tutor/cost-log.md` (a markdown table — one session per row, easy to scan in Obsidian)
+
+Prices are hardcoded in `bot.py` (constants near the top, verified against the official pricing pages with source URLs in comments). Refresh them when vendors change pricing.
+
+Known approximations:
+
+- **STT cost** estimated from session duration (Pipecat's Deepgram service doesn't emit audio-seconds directly)
+- **TTS cost** estimated from character count converted to audio-seconds at ~14 chars/sec, then to Cartesia credits at 15 credits/sec
+- **LLM cost** is exact (tokens reported by Anthropic, including cache-read vs cache-write breakdown)
+
+For actual billed amounts, check each provider's dashboard.

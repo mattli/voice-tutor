@@ -4,7 +4,9 @@ from datetime import datetime
 from pathlib import Path
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMRunFrame
+from pipecat.frames.frames import LLMRunFrame, MetricsFrame
+from pipecat.metrics.metrics import LLMUsageMetricsData, TTSUsageMetricsData
+from pipecat.observers.base_observer import BaseObserver, FramePushed
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -19,10 +21,94 @@ from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.transports.base_transport import TransportParams
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 
+# Prices verified 2026-04-14 from official pricing pages.
+# Anthropic: https://claude.com/pricing
+# Deepgram: https://deepgram.com/pricing
+# Cartesia: https://cartesia.ai/pricing
+PRICE_ANTHROPIC_INPUT_PER_MTOK = 3.00
+PRICE_ANTHROPIC_OUTPUT_PER_MTOK = 15.00
+PRICE_ANTHROPIC_CACHE_WRITE_PER_MTOK = 3.75
+PRICE_ANTHROPIC_CACHE_READ_PER_MTOK = 0.30
+PRICE_DEEPGRAM_NOVA3_PER_MIN = 0.0077
+# Cartesia charges 15 credits per second of audio on PAYG. Pipecat only emits
+# character count, not audio seconds, so estimate audio duration from chars.
+# Typical neural TTS produces ~14 chars per second of audio at normal pace.
+# Pro plan ($5/mo billed monthly) includes 100K credits ≈ 1.85 hours/mo.
+# Overage rate not listed on pricing page; treating Pro as a flat per-credit
+# cost at $5 / 100_000 credits = $0.00005/credit.
+CHARS_PER_SEC_TTS = 14
+CARTESIA_CREDITS_PER_SEC = 15
+PRICE_CARTESIA_PER_CREDIT = 5.00 / 100_000
+
+
+class UsageAccumulator(BaseObserver):
+    def __init__(self):
+        super().__init__()
+        self.uncached_input_tokens = 0
+        self.cache_read_tokens = 0
+        self.cache_write_tokens = 0
+        self.output_tokens = 0
+        self.tts_chars = 0
+
+    async def on_push_frame(self, data: FramePushed):
+        if not isinstance(data.frame, MetricsFrame):
+            return
+        for m in data.frame.data:
+            if isinstance(m, LLMUsageMetricsData):
+                u = m.value
+                cache_read = u.cache_read_input_tokens or 0
+                cache_write = u.cache_creation_input_tokens or 0
+                self.cache_read_tokens += cache_read
+                self.cache_write_tokens += cache_write
+                self.uncached_input_tokens += u.prompt_tokens - cache_read - cache_write
+                self.output_tokens += u.completion_tokens
+            elif isinstance(m, TTSUsageMetricsData):
+                self.tts_chars += m.value
+
+    def summary(self, session_duration_sec: float) -> dict:
+        llm_input_cost = self.uncached_input_tokens / 1_000_000 * PRICE_ANTHROPIC_INPUT_PER_MTOK
+        llm_cache_read_cost = self.cache_read_tokens / 1_000_000 * PRICE_ANTHROPIC_CACHE_READ_PER_MTOK
+        llm_cache_write_cost = self.cache_write_tokens / 1_000_000 * PRICE_ANTHROPIC_CACHE_WRITE_PER_MTOK
+        llm_output_cost = self.output_tokens / 1_000_000 * PRICE_ANTHROPIC_OUTPUT_PER_MTOK
+        llm_cost = llm_input_cost + llm_cache_read_cost + llm_cache_write_cost + llm_output_cost
+
+        # STT billed per minute of audio streamed; approximate with session duration.
+        stt_minutes = session_duration_sec / 60
+        stt_cost = stt_minutes * PRICE_DEEPGRAM_NOVA3_PER_MIN
+
+        # TTS: estimate audio seconds from char count, then credits, then cost.
+        tts_audio_sec = self.tts_chars / CHARS_PER_SEC_TTS
+        tts_credits = tts_audio_sec * CARTESIA_CREDITS_PER_SEC
+        tts_cost = tts_credits * PRICE_CARTESIA_PER_CREDIT
+
+        total = llm_cost + stt_cost + tts_cost
+        return {
+            "session_duration_sec": round(session_duration_sec, 1),
+            "llm": {
+                "uncached_input_tokens": self.uncached_input_tokens,
+                "cache_read_tokens": self.cache_read_tokens,
+                "cache_write_tokens": self.cache_write_tokens,
+                "output_tokens": self.output_tokens,
+                "cost_usd": round(llm_cost, 4),
+            },
+            "stt": {
+                "minutes": round(stt_minutes, 2),
+                "cost_usd": round(stt_cost, 4),
+            },
+            "tts": {
+                "chars": self.tts_chars,
+                "est_audio_sec": round(tts_audio_sec, 1),
+                "est_credits": round(tts_credits, 0),
+                "cost_usd": round(tts_cost, 4),
+            },
+            "total_cost_usd": round(total, 4),
+        }
+
 VOICE_TUTOR_DIR = Path.home() / ".voice-tutor"
 TRANSCRIPTS_DIR = VOICE_TUTOR_DIR / "transcripts"
 PROFILE_PATH = VOICE_TUTOR_DIR / "profile.md"
 WIKI_DIR = Path.home() / "second-brain" / "resources" / "wiki"
+COST_LOG_PATH = Path.home() / "second-brain" / "projects" / "products" / "voice-tutor" / "cost-log.md"
 RECENT_TRANSCRIPT_COUNT = 3
 
 BASE_INSTRUCTION = (
@@ -139,9 +225,11 @@ async def bot(runner_args):
         assistant_aggregator,
     ])
 
+    usage = UsageAccumulator()
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
+        observers=[usage],
     )
 
     # Transcript accumulation
@@ -168,14 +256,47 @@ async def bot(runner_args):
         if not turns:
             return
         TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-        filename = session_start.strftime("%Y-%m-%d-%H%M%S") + ".json"
+        stem = session_start.strftime("%Y-%m-%d-%H%M%S")
+        session_end = datetime.now()
         transcript = {
             "session_start": session_start.isoformat(),
-            "session_end": datetime.now().isoformat(),
+            "session_end": session_end.isoformat(),
             "turn_count": len(turns),
             "turns": turns,
         }
-        (TRANSCRIPTS_DIR / filename).write_text(json.dumps(transcript, indent=2))
+        (TRANSCRIPTS_DIR / f"{stem}.json").write_text(json.dumps(transcript, indent=2))
+
+        summary = usage.summary((session_end - session_start).total_seconds())
+        (TRANSCRIPTS_DIR / f"{stem}.usage.json").write_text(json.dumps(summary, indent=2))
+        mins = summary["session_duration_sec"] / 60
+        line = (
+            f"Session: {mins:.1f}min · {len(turns)} turns · "
+            f"${summary['total_cost_usd']:.3f} "
+            f"(llm ${summary['llm']['cost_usd']:.3f} · "
+            f"stt ${summary['stt']['cost_usd']:.3f} · "
+            f"tts ${summary['tts']['cost_usd']:.3f})"
+        )
+        print(line, flush=True)
+
+        COST_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if not COST_LOG_PATH.exists():
+            COST_LOG_PATH.write_text(
+                "# Voice Tutor — Cost Log\n\n"
+                "One row per session. Costs are estimated (see README).\n\n"
+                "| Session start | Duration | Turns | Total | LLM | STT | TTS |\n"
+                "|---|---|---|---|---|---|---|\n"
+            )
+        row = (
+            f"| {session_start.strftime('%Y-%m-%d %H:%M')} "
+            f"| {mins:.1f} min "
+            f"| {len(turns)} "
+            f"| ${summary['total_cost_usd']:.3f} "
+            f"| ${summary['llm']['cost_usd']:.3f} "
+            f"| ${summary['stt']['cost_usd']:.3f} "
+            f"| ${summary['tts']['cost_usd']:.3f} |\n"
+        )
+        with COST_LOG_PATH.open("a") as f:
+            f.write(row)
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
