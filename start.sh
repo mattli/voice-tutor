@@ -3,6 +3,9 @@ set -e
 
 cd "$(dirname "$0")"
 
+# Clear any prior bot still bound to port 7860
+lsof -ti :7860 | xargs kill -9 2>/dev/null || true
+
 # Source .env for API keys
 if [ -f .env ]; then
     set -a

@@ -1,8 +1,14 @@
 import json
 import os
+import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
+import anthropic
+
+from pipecat.adapters.schemas.function_schema import FunctionSchema
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import (
     InputAudioRawFrame,
@@ -56,6 +62,14 @@ class UsageAccumulator(BaseObserver):
         # Cross-check against session_duration_sec; divergence would signal a
         # transport behavior change (e.g. VAD-gated audio_in).
         self.stt_audio_sec = 0.0
+        self.tool_calls: list[dict] = []
+        # Set by the tool handler immediately after it runs; the next
+        # TTSAudioRawFrame closes the measurement.
+        self._pending_tool: dict | None = None
+
+    def mark_tool_call(self, page: str):
+        entry = {"page": page, "start_monotonic": time.monotonic(), "timestamp": datetime.now().isoformat()}
+        self._pending_tool = entry
 
     async def on_push_frame(self, data: FramePushed):
         frame = data.frame
@@ -65,6 +79,20 @@ class UsageAccumulator(BaseObserver):
             denom = frame.sample_rate * max(frame.num_channels, 1) * 2
             if denom:
                 self.tts_audio_sec += len(frame.audio) / denom
+            if self._pending_tool is not None:
+                latency = time.monotonic() - self._pending_tool["start_monotonic"]
+                self.tool_calls.append({
+                    "page": self._pending_tool["page"],
+                    "timestamp": self._pending_tool["timestamp"],
+                    "latency_to_first_audio_sec": round(latency, 3),
+                })
+                print(
+                    f"[wiki-tool] {self._pending_tool['timestamp']} "
+                    f"page={self._pending_tool['page']} "
+                    f"latency_to_first_audio={latency:.2f}s",
+                    file=sys.stderr, flush=True,
+                )
+                self._pending_tool = None
             return
         if isinstance(frame, InputAudioRawFrame):
             denom = frame.sample_rate * max(frame.num_channels, 1) * 2
@@ -127,7 +155,46 @@ PROFILE_PATH = VOICE_TUTOR_DIR / "profile.md"
 WIKI_DIR = Path.home() / "second-brain" / "resources" / "wiki"
 COST_LOG_PATH = Path.home() / "second-brain" / "products" / "voice-tutor" / "cost-log.md"
 COST_LOG_JSONL_PATH = COST_LOG_PATH.with_suffix(".jsonl")
+SESSION_ANALYSIS_DIR = Path.home() / "second-brain" / "products" / "voice-tutor"
 RECENT_TRANSCRIPT_COUNT = 3
+MIN_ANALYSIS_DURATION_SEC = 300
+
+ANALYSIS_PROMPT = """\
+Analyze this voice conversation session transcript. Produce a structured markdown \
+document with the following sections. Be concise and specific — no filler.
+
+## Session overview
+A markdown table with: Duration, Turns, Total cost, Cost/min, LLM cost, STT cost, TTS cost.
+
+## On-demand tool calls
+If any tool calls occurred, a table with: Timestamp (HH:MM:SS), Page, Latency to first audio. \
+Note any patterns (back-to-back lookups, failed lookups, filler speech before lookup). \
+If no tool calls, say "None this session."
+
+## Topics covered
+Numbered list of the main topics/threads discussed, with a one-sentence summary each.
+
+## Wiki usage vs general knowledge
+Estimate how much of the conversation drew from wiki content vs the LLM's general knowledge \
+vs Matt's own ideas. Use a simple table with columns: Source, Approx turns, Notes. \
+Sources are: "On-demand wiki pages", "Pre-loaded wiki", "General LLM knowledge", \
+"Matt's own knowledge/ideas". Note the key finding — was the wiki central or peripheral?
+
+## Interaction quality notes
+Bullet points on: pacing issues (did Matt ask to slow down?), STT errors (misheard words), \
+interruptions, response length compliance, and anything else notable about the interaction dynamics.
+
+Here is the session data:
+
+### Usage summary
+{usage_json}
+
+### Tool calls
+{tool_calls_json}
+
+### Transcript
+{transcript_json}
+"""
 
 BASE_INSTRUCTION = (
     "You are a friendly, curious conversational partner and tutor. "
@@ -147,12 +214,36 @@ def load_profile() -> str:
     return ""
 
 
+# Latency-test scaffolding: the `landscape/` section is excluded from the
+# full-cache system prompt and fetched on demand via the read_wiki_page tool.
+# This is a minimal test, not the full navigate-on-demand refactor.
+ON_DEMAND_SUBDIR = "landscape"
+
+ON_DEMAND_INDEX = (
+    "The following pages are NOT loaded into this prompt — call "
+    "`read_wiki_page(filename)` to open one when the user's question "
+    "touches the topic. Available filenames:\n"
+    "- landscape/ai-careers.md — job market bifurcation, what gets hired\n"
+    "- landscape/ai-startup-distribution.md — distribution strategies, cold outreach, AI agencies\n"
+    "- landscape/ai-organization-design.md — Block's 'company as intelligence', small teams + agents\n"
+    "- landscape/yc-ai-thesis.md — YC 2026 RFS; PG's 'Live in the Future'\n"
+    "- landscape/vertical-ai.md — enterprise AI adoption; Harvey's playbook\n"
+    "- landscape/ai-user-perspectives.md — Anthropic's 81K-person survey; user fears\n"
+    "- landscape/agi-definitions.md — DeepMind/Bengio/Hinton/OpenAI definitions; jagged capabilities\n\n"
+    "Before calling the tool, say one short sentence aloud (e.g. 'let me pull "
+    "that up') so Matt isn't left in silence during the lookup. Don't open "
+    "pages speculatively — only when the topic is central to Matt's question."
+)
+
+
 def load_wiki() -> str:
     if not WIKI_DIR.exists():
         return ""
     pages = []
     for f in sorted(WIKI_DIR.rglob("*.md")):
         rel_path = f.relative_to(WIKI_DIR)
+        if rel_path.parts and rel_path.parts[0] == ON_DEMAND_SUBDIR:
+            continue
         pages.append(f"### {rel_path}\n\n{f.read_text()}")
     return "\n\n---\n\n".join(pages)
 
@@ -160,7 +251,10 @@ def load_wiki() -> str:
 def load_recent_transcripts() -> list[dict]:
     if not TRANSCRIPTS_DIR.exists():
         return []
-    files = sorted(TRANSCRIPTS_DIR.glob("*.json"), reverse=True)[:RECENT_TRANSCRIPT_COUNT]
+    files = sorted(
+        (f for f in TRANSCRIPTS_DIR.glob("*.json") if not f.name.endswith(".usage.json")),
+        reverse=True,
+    )[:RECENT_TRANSCRIPT_COUNT]
     transcripts = []
     for f in files:
         transcripts.append(json.loads(f.read_text()))
@@ -176,6 +270,29 @@ def format_transcript_summary(transcript: dict) -> str:
     return f"Conversation on {date}:\n" + "\n".join(lines)
 
 
+def generate_session_analysis(stem: str, transcript: dict, summary: dict, tool_calls: list[dict]):
+    prompt = ANALYSIS_PROMPT.format(
+        usage_json=json.dumps(summary, indent=2),
+        tool_calls_json=json.dumps(tool_calls, indent=2) if tool_calls else "[]",
+        transcript_json=json.dumps(transcript, indent=2),
+    )
+    try:
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=2048,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        analysis = resp.content[0].text
+    except Exception as e:
+        print(f"[session-analysis] failed: {e}", file=sys.stderr, flush=True)
+        return
+    header = f"# Session Analysis — {stem}\n\n"
+    out_path = SESSION_ANALYSIS_DIR / f"session-analysis-{stem}.md"
+    out_path.write_text(header + analysis)
+    print(f"[session-analysis] wrote {out_path}", file=sys.stderr, flush=True)
+
+
 def build_system_instruction() -> str:
     parts = [BASE_INSTRUCTION]
 
@@ -186,6 +303,8 @@ def build_system_instruction() -> str:
     wiki = load_wiki()
     if wiki:
         parts.append(f"\n## Matt's knowledge wiki\n\n{wiki}")
+
+    parts.append(f"\n## On-demand wiki pages\n\n{ON_DEMAND_INDEX}")
 
     transcripts = load_recent_transcripts()
     if transcripts:
@@ -227,11 +346,48 @@ async def bot(runner_args):
         ),
     )
 
-    context = LLMContext()
+    read_wiki_schema = FunctionSchema(
+        name="read_wiki_page",
+        description=(
+            "Open one of the on-demand landscape wiki pages listed in the "
+            "system prompt. Pass the exact filename including the 'landscape/' "
+            "prefix, e.g. 'landscape/yc-ai-thesis.md'."
+        ),
+        properties={
+            "filename": {
+                "type": "string",
+                "description": "Filename of the page to open, e.g. 'landscape/yc-ai-thesis.md'.",
+            },
+        },
+        required=["filename"],
+    )
+    context = LLMContext(tools=ToolsSchema(standard_tools=[read_wiki_schema]))
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
     )
+
+    usage = UsageAccumulator()
+
+    async def handle_read_wiki_page(params):
+        filename = params.arguments.get("filename", "")
+        requested = (WIKI_DIR / filename).resolve()
+        allowed_root = (WIKI_DIR / ON_DEMAND_SUBDIR).resolve()
+        try:
+            requested.relative_to(allowed_root)
+        except ValueError:
+            await params.result_callback({
+                "error": f"filename must be under {ON_DEMAND_SUBDIR}/",
+            })
+            return
+        if not requested.exists():
+            await params.result_callback({"error": f"page not found: {filename}"})
+            return
+        usage.mark_tool_call(filename)
+        print(f"[wiki-tool] opening {filename}", file=sys.stderr, flush=True)
+        await params.result_callback({"content": requested.read_text()})
+
+    llm.register_function("read_wiki_page", handle_read_wiki_page)
 
     pipeline = Pipeline([
         transport.input(),
@@ -243,7 +399,6 @@ async def bot(runner_args):
         assistant_aggregator,
     ])
 
-    usage = UsageAccumulator()
     task = PipelineTask(
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
@@ -338,9 +493,13 @@ async def bot(runner_args):
             "cost_stt_usd": summary["stt"]["cost_usd"],
             "cost_tts_usd": summary["tts"]["cost_usd"],
             "cost_total_usd": summary["total_cost_usd"],
+            "tool_calls": usage.tool_calls,
         }
         with COST_LOG_JSONL_PATH.open("a") as f:
             f.write(json.dumps(jsonl_entry) + "\n")
+
+        if summary["session_duration_sec"] >= MIN_ANALYSIS_DURATION_SEC:
+            generate_session_analysis(stem, transcript, summary, usage.tool_calls)
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
