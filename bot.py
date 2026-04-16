@@ -214,38 +214,28 @@ def load_profile() -> str:
     return ""
 
 
-# Latency-test scaffolding: the `landscape/` section is excluded from the
-# full-cache system prompt and fetched on demand via the read_wiki_page tool.
-# This is a minimal test, not the full navigate-on-demand refactor.
-ON_DEMAND_SUBDIR = "landscape"
-
-ON_DEMAND_INDEX = (
-    "The following pages are NOT loaded into this prompt — call "
-    "`read_wiki_page(filename)` to open one when the user's question "
-    "touches the topic. Available filenames:\n"
-    "- landscape/ai-careers.md — job market bifurcation, what gets hired\n"
-    "- landscape/ai-startup-distribution.md — distribution strategies, cold outreach, AI agencies\n"
-    "- landscape/ai-organization-design.md — Block's 'company as intelligence', small teams + agents\n"
-    "- landscape/yc-ai-thesis.md — YC 2026 RFS; PG's 'Live in the Future'\n"
-    "- landscape/vertical-ai.md — enterprise AI adoption; Harvey's playbook\n"
-    "- landscape/ai-user-perspectives.md — Anthropic's 81K-person survey; user fears\n"
-    "- landscape/agi-definitions.md — DeepMind/Bengio/Hinton/OpenAI definitions; jagged capabilities\n\n"
-    "Before calling the tool, say one short sentence aloud (e.g. 'let me pull "
-    "that up') so Matt isn't left in silence during the lookup. Don't open "
-    "pages speculatively — only when the topic is central to Matt's question."
+# The wiki is fully on-demand: only INDEX.md is preloaded into the prompt.
+# Every other page is fetched via the read_wiki_page tool when a topic
+# becomes central to the conversation.
+WIKI_USAGE_INSTRUCTIONS = (
+    "### How to use the wiki\n\n"
+    "- When you need a wiki page, say one short sentence first (e.g. "
+    "\"let me pull that up\"), then call `read_wiki_page(path)`. This prevents "
+    "silence during the lookup.\n"
+    "- Don't open pages speculatively. Open a page only when a specific topic "
+    "is central to Matt's current question. One page per question is typical "
+    "— don't chain-open multiple pages unless Matt explicitly asks about "
+    "multiple topics.\n"
+    "- Pass the path relative to the wiki root exactly as shown in the index, "
+    "e.g. 'concepts/llm-knowledge-bases.md' or 'landscape/yc-ai-thesis.md'."
 )
 
 
-def load_wiki() -> str:
-    if not WIKI_DIR.exists():
+def load_wiki_index() -> str:
+    index_path = WIKI_DIR / "INDEX.md"
+    if not index_path.exists():
         return ""
-    pages = []
-    for f in sorted(WIKI_DIR.rglob("*.md")):
-        rel_path = f.relative_to(WIKI_DIR)
-        if rel_path.parts and rel_path.parts[0] == ON_DEMAND_SUBDIR:
-            continue
-        pages.append(f"### {rel_path}\n\n{f.read_text()}")
-    return "\n\n---\n\n".join(pages)
+    return index_path.read_text()
 
 
 def load_recent_transcripts() -> list[dict]:
@@ -300,11 +290,11 @@ def build_system_instruction() -> str:
     if profile:
         parts.append(f"\n## About the person you're talking to\n\n{profile}")
 
-    wiki = load_wiki()
-    if wiki:
-        parts.append(f"\n## Matt's knowledge wiki\n\n{wiki}")
-
-    parts.append(f"\n## On-demand wiki pages\n\n{ON_DEMAND_INDEX}")
+    wiki_index = load_wiki_index()
+    if wiki_index:
+        parts.append(
+            f"\n## Matt's knowledge wiki\n\n{wiki_index}\n\n{WIKI_USAGE_INSTRUCTIONS}"
+        )
 
     transcripts = load_recent_transcripts()
     if transcripts:
@@ -349,17 +339,17 @@ async def bot(runner_args):
     read_wiki_schema = FunctionSchema(
         name="read_wiki_page",
         description=(
-            "Open one of the on-demand landscape wiki pages listed in the "
-            "system prompt. Pass the exact filename including the 'landscape/' "
-            "prefix, e.g. 'landscape/yc-ai-thesis.md'."
+            "Open a page from Matt's knowledge wiki. Pass the path relative to "
+            "the wiki root exactly as shown in the index in the system prompt, "
+            "e.g. 'concepts/llm-knowledge-bases.md' or 'landscape/yc-ai-thesis.md'."
         ),
         properties={
-            "filename": {
+            "path": {
                 "type": "string",
-                "description": "Filename of the page to open, e.g. 'landscape/yc-ai-thesis.md'.",
+                "description": "Path relative to wiki root, e.g. 'concepts/llm-knowledge-bases.md'.",
             },
         },
-        required=["filename"],
+        required=["path"],
     )
     context = LLMContext(tools=ToolsSchema(standard_tools=[read_wiki_schema]))
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
@@ -370,21 +360,19 @@ async def bot(runner_args):
     usage = UsageAccumulator()
 
     async def handle_read_wiki_page(params):
-        filename = params.arguments.get("filename", "")
-        requested = (WIKI_DIR / filename).resolve()
-        allowed_root = (WIKI_DIR / ON_DEMAND_SUBDIR).resolve()
+        path = params.arguments.get("path", "")
+        requested = (WIKI_DIR / path).resolve()
+        wiki_root = WIKI_DIR.resolve()
         try:
-            requested.relative_to(allowed_root)
+            requested.relative_to(wiki_root)
         except ValueError:
-            await params.result_callback({
-                "error": f"filename must be under {ON_DEMAND_SUBDIR}/",
-            })
+            await params.result_callback({"error": "path must be inside the wiki"})
             return
         if not requested.exists():
-            await params.result_callback({"error": f"page not found: {filename}"})
+            await params.result_callback({"error": f"page not found: {path}"})
             return
-        usage.mark_tool_call(filename)
-        print(f"[wiki-tool] opening {filename}", file=sys.stderr, flush=True)
+        usage.mark_tool_call(path)
+        print(f"[wiki-tool] opening {path}", file=sys.stderr, flush=True)
         await params.result_callback({"content": requested.read_text()})
 
     llm.register_function("read_wiki_page", handle_read_wiki_page)
