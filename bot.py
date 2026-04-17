@@ -152,12 +152,17 @@ class UsageAccumulator(BaseObserver):
 VOICE_TUTOR_DIR = Path.home() / ".voice-tutor"
 TRANSCRIPTS_DIR = VOICE_TUTOR_DIR / "transcripts"
 PROFILE_PATH = VOICE_TUTOR_DIR / "profile.md"
+# Accumulating memory: one dated section per session, append-only.
+# Future: when this file exceeds ~2K tokens, compact older entries by summarizing
+# everything before a cutoff date into a single "before April X" block. Not today's
+# problem — revisit when the memory block starts dominating the system prompt.
+MEMORY_PATH = VOICE_TUTOR_DIR / "memory.md"
 WIKI_DIR = Path.home() / "second-brain" / "resources" / "wiki"
 COST_LOG_PATH = Path.home() / "second-brain" / "products" / "voice-tutor" / "cost-log.md"
 COST_LOG_JSONL_PATH = COST_LOG_PATH.with_suffix(".jsonl")
 SESSION_ANALYSIS_DIR = Path.home() / "second-brain" / "products" / "voice-tutor"
-RECENT_TRANSCRIPT_COUNT = 3
 MIN_ANALYSIS_DURATION_SEC = 300
+MIN_SUMMARY_DURATION_SEC = 120
 
 ANALYSIS_PROMPT = """\
 Analyze this voice conversation session transcript. Produce a structured markdown \
@@ -238,26 +243,95 @@ def load_wiki_index() -> str:
     return index_path.read_text()
 
 
-def load_recent_transcripts() -> list[dict]:
-    if not TRANSCRIPTS_DIR.exists():
-        return []
-    files = sorted(
-        (f for f in TRANSCRIPTS_DIR.glob("*.json") if not f.name.endswith(".usage.json")),
-        reverse=True,
-    )[:RECENT_TRANSCRIPT_COUNT]
-    transcripts = []
-    for f in files:
-        transcripts.append(json.loads(f.read_text()))
-    return list(reversed(transcripts))  # chronological order
+def _format_memory_date(iso_ts: str) -> str:
+    dt = datetime.fromisoformat(iso_ts)
+    hour12 = dt.hour % 12 or 12
+    ampm = "AM" if dt.hour < 12 else "PM"
+    return f"{dt.strftime('%B')} {dt.day}, {dt.year} — {hour12}:{dt.minute:02d} {ampm}"
 
 
-def format_transcript_summary(transcript: dict) -> str:
-    date = transcript["session_start"][:10]
+def append_to_memory(transcript: dict, summary_text: str):
+    header = f"## {_format_memory_date(transcript['session_start'])}\n"
+    entry = header + summary_text.strip() + "\n\n"
+    if not MEMORY_PATH.exists():
+        MEMORY_PATH.write_text(
+            "# Memory — what we've discussed\n\n"
+            "One section per session, append-only. Summaries are lifted from "
+            "the `.summary.md` sidecar written alongside each transcript.\n\n"
+        )
+    with MEMORY_PATH.open("a") as f:
+        f.write(entry)
+
+
+def load_memory() -> str:
+    if not MEMORY_PATH.exists():
+        return ""
+    return MEMORY_PATH.read_text()
+
+
+def _format_session_time(iso_ts: str) -> str:
+    dt = datetime.fromisoformat(iso_ts)
+    # %-d / %-I strip leading zeros on macOS/Linux; avoid cross-platform flags.
+    month_day = dt.strftime("%B ") + str(dt.day)
+    hour12 = dt.hour % 12 or 12
+    ampm = "am" if dt.hour < 12 else "pm"
+    return f"{month_day}, {dt.year} at {hour12}:{dt.minute:02d}{ampm}"
+
+
+def _format_full_transcript_block(transcript: dict, header_suffix: str = "") -> str:
+    header = f"## Session from {_format_session_time(transcript['session_start'])}{header_suffix}\n"
     lines = []
     for turn in transcript["turns"]:
         role = "You" if turn["role"] == "assistant" else "Matt"
         lines.append(f"  {role}: {turn['content']}")
-    return f"Conversation on {date}:\n" + "\n".join(lines)
+    return header + "\n".join(lines)
+
+
+def load_most_recent_transcript_block() -> str | None:
+    """Return the most recent full-transcript block, or None if no transcripts exist.
+
+    Older sessions are no longer loaded here — they accumulate in memory.md instead.
+    """
+    if not TRANSCRIPTS_DIR.exists():
+        return None
+    files = sorted(
+        (f for f in TRANSCRIPTS_DIR.glob("*.json") if not f.name.endswith(".usage.json")),
+        reverse=True,
+    )
+    if not files:
+        return None
+    transcript = json.loads(files[0].read_text())
+    return _format_full_transcript_block(transcript, header_suffix=" (most recent)")
+
+
+SUMMARY_PROMPT = """\
+Summarize this voice tutoring conversation in 3-5 short bullet points. Cover what \
+was discussed, any decisions Matt made, and any open questions or next steps. Be \
+terse — this is loaded as context into a future voice session so the tutor can \
+pick up continuity. Output only the bullets (one per line, starting with "- "). \
+No preamble, no trailing prose.
+
+### Transcript
+{transcript_json}
+"""
+
+
+def generate_session_summary(stem: str, transcript: dict):
+    prompt = SUMMARY_PROMPT.format(transcript_json=json.dumps(transcript, indent=2))
+    try:
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=512,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.content[0].text.strip()
+    except Exception as e:
+        print(f"[session-summary] failed: {e}", file=sys.stderr, flush=True)
+        return
+    out_path = TRANSCRIPTS_DIR / f"{stem}.summary.md"
+    out_path.write_text(text + "\n")
+    print(f"[session-summary] wrote {out_path}", file=sys.stderr, flush=True)
 
 
 def generate_session_analysis(stem: str, transcript: dict, summary: dict, tool_calls: list[dict]):
@@ -296,11 +370,13 @@ def build_system_instruction() -> str:
             f"\n## Matt's knowledge wiki\n\n{wiki_index}\n\n{WIKI_USAGE_INSTRUCTIONS}"
         )
 
-    transcripts = load_recent_transcripts()
-    if transcripts:
-        parts.append("\n## Recent conversations\n")
-        for t in transcripts:
-            parts.append(format_transcript_summary(t))
+    memory = load_memory()
+    if memory:
+        parts.append(f"\n# What we've discussed\n\n{memory}")
+
+    most_recent = load_most_recent_transcript_block()
+    if most_recent:
+        parts.append(f"\n# Most recent session\n\n{most_recent}")
 
     return "\n".join(parts)
 
@@ -485,6 +561,12 @@ async def bot(runner_args):
         }
         with COST_LOG_JSONL_PATH.open("a") as f:
             f.write(json.dumps(jsonl_entry) + "\n")
+
+        if summary["session_duration_sec"] >= MIN_SUMMARY_DURATION_SEC:
+            generate_session_summary(stem, transcript)
+            summary_path = TRANSCRIPTS_DIR / f"{stem}.summary.md"
+            if summary_path.exists():
+                append_to_memory(transcript, summary_path.read_text())
 
         if summary["session_duration_sec"] >= MIN_ANALYSIS_DURATION_SEC:
             generate_session_analysis(stem, transcript, summary, usage.tool_calls)
