@@ -7,7 +7,7 @@ from pathlib import Path
 
 import anthropic
 
-from pipecat.adapters.schemas.function_schema import FunctionSchema
+import wiki
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import (
@@ -165,7 +165,6 @@ PROFILE_PATH = VOICE_TUTOR_DIR / "profile.md"
 # everything before a cutoff date into a single "before April X" block. Not today's
 # problem — revisit when the memory block starts dominating the system prompt.
 MEMORY_PATH = VOICE_TUTOR_DIR / "memory.md"
-WIKI_DIR = Path.home() / "second-brain" / "resources" / "wiki"
 COST_LOG_PATH = Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "cost-log.md"
 COST_LOG_JSONL_PATH = COST_LOG_PATH.with_suffix(".jsonl")
 SESSION_ANALYSIS_DIR = Path.home() / "second-brain" / "products" / "voice-tutor" / "session-analyses"
@@ -215,8 +214,14 @@ BASE_INSTRUCTION = (
     "One to two sentences per turn. Never monologue. "
     "Be warm but not sycophantic. Never repeat yourself. "
     "You know Matt from prior conversations. "
-    "Reference past topics naturally when relevant, but don't force it. "
-    "You have access to Matt's personal knowledge wiki — use it to teach, "
+    "Reference past topics naturally when relevant, but don't force it."
+)
+
+# Appended to BASE_INSTRUCTION only when the wiki module is active. Lives in
+# bot.py rather than wiki.py because it's about persona framing, not the tool
+# itself — the wiki module owns the actual section block and usage rules.
+WIKI_TAGLINE = (
+    " You have access to Matt's personal knowledge wiki — use it to teach, "
     "connect ideas, and reference things he's been reading and learning about."
 )
 
@@ -227,28 +232,7 @@ def load_profile() -> str:
     return ""
 
 
-# The wiki is fully on-demand: only INDEX.md is preloaded into the prompt.
-# Every other page is fetched via the read_wiki_page tool when a topic
-# becomes central to the conversation.
-WIKI_USAGE_INSTRUCTIONS = (
-    "### How to use the wiki\n\n"
-    "- When you need a wiki page, say one short sentence first (e.g. "
-    "\"let me pull that up\"), then call `read_wiki_page(path)`. This prevents "
-    "silence during the lookup.\n"
-    "- Don't open pages speculatively. Open a page only when a specific topic "
-    "is central to Matt's current question. One page per question is typical "
-    "— don't chain-open multiple pages unless Matt explicitly asks about "
-    "multiple topics.\n"
-    "- Pass the path relative to the wiki root exactly as shown in the index, "
-    "e.g. 'concepts/llm-knowledge-bases.md' or 'landscape/yc-ai-thesis.md'."
-)
-
-
-def load_wiki_index() -> str:
-    index_path = WIKI_DIR / "INDEX.md"
-    if not index_path.exists():
-        return ""
-    return index_path.read_text()
+WIKI_ENABLED = os.getenv("WIKI_ENABLED", "true").lower() in ("1", "true", "yes")
 
 
 def _format_memory_date(iso_ts: str) -> str:
@@ -368,17 +352,17 @@ def generate_session_analysis(stem: str, transcript: dict, summary: dict, tool_c
 
 
 def build_system_instruction() -> str:
-    parts = [BASE_INSTRUCTION]
+    base = BASE_INSTRUCTION + (WIKI_TAGLINE if WIKI_ENABLED else "")
+    parts = [base]
 
     profile = load_profile()
     if profile:
         parts.append(f"\n## About the person you're talking to\n\n{profile}")
 
-    wiki_index = load_wiki_index()
-    if wiki_index:
-        parts.append(
-            f"\n## Matt's knowledge wiki\n\n{wiki_index}\n\n{WIKI_USAGE_INSTRUCTIONS}"
-        )
+    if WIKI_ENABLED:
+        wiki_block = wiki.system_prompt_block()
+        if wiki_block:
+            parts.append(wiki_block)
 
     memory = load_memory()
     if memory:
@@ -423,22 +407,8 @@ async def bot(runner_args):
         ),
     )
 
-    read_wiki_schema = FunctionSchema(
-        name="read_wiki_page",
-        description=(
-            "Open a page from Matt's knowledge wiki. Pass the path relative to "
-            "the wiki root exactly as shown in the index in the system prompt, "
-            "e.g. 'concepts/llm-knowledge-bases.md' or 'landscape/yc-ai-thesis.md'."
-        ),
-        properties={
-            "path": {
-                "type": "string",
-                "description": "Path relative to wiki root, e.g. 'concepts/llm-knowledge-bases.md'.",
-            },
-        },
-        required=["path"],
-    )
-    context = LLMContext(tools=ToolsSchema(standard_tools=[read_wiki_schema]))
+    tools = [wiki.tool_schema()] if WIKI_ENABLED else []
+    context = LLMContext(tools=ToolsSchema(standard_tools=tools))
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
@@ -446,23 +416,8 @@ async def bot(runner_args):
 
     usage = UsageAccumulator()
 
-    async def handle_read_wiki_page(params):
-        path = params.arguments.get("path", "")
-        requested = (WIKI_DIR / path).resolve()
-        wiki_root = WIKI_DIR.resolve()
-        try:
-            requested.relative_to(wiki_root)
-        except ValueError:
-            await params.result_callback({"error": "path must be inside the wiki"})
-            return
-        if not requested.exists():
-            await params.result_callback({"error": f"page not found: {path}"})
-            return
-        usage.mark_tool_call(path)
-        print(f"[wiki-tool] opening {path}", file=sys.stderr, flush=True)
-        await params.result_callback({"content": requested.read_text()})
-
-    llm.register_function("read_wiki_page", handle_read_wiki_page)
+    if WIKI_ENABLED:
+        llm.register_function("read_wiki_page", wiki.make_tool_handler(usage.mark_tool_call))
 
     pipeline = Pipeline([
         transport.input(),

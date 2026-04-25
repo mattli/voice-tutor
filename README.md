@@ -12,6 +12,11 @@ Create a `.env` file with:
 ANTHROPIC_API_KEY=your-key
 DEEPGRAM_API_KEY=your-key
 CARTESIA_API_KEY=your-key
+# Optional. Default true. Set to false to run the bot without the
+# personal-wiki integration — strips the wiki INDEX from the system prompt,
+# unregisters the read_wiki_page tool, and drops the wiki tagline from the
+# persona instruction. Useful for A/B-testing baseline behavior.
+# WIKI_ENABLED=false
 ```
 
 ### Install
