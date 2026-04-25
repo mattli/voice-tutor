@@ -62,10 +62,10 @@ When a session ends, the bot writes a sidecar `<session>.usage.json` next to the
 
 Prices are hardcoded in `bot.py` (constants near the top, verified against the official pricing pages with source URLs in comments). Refresh them when vendors change pricing.
 
-Known approximations:
+Cost accounting:
 
-- **STT cost** estimated from session duration (Pipecat's Deepgram service doesn't emit audio-seconds directly)
-- **TTS cost** estimated from character count converted to audio-seconds at ~14 chars/sec, then to Cartesia credits at 15 credits/sec
-- **LLM cost** is exact (tokens reported by Anthropic, including cache-read vs cache-write breakdown)
+- **LLM cost** is exact — token counts come from Anthropic's API responses (live Sonnet via pipecat metrics, post-session Haiku via `resp.usage` directly). Includes cache-read vs cache-write breakdown for the live LLM.
+- **TTS cost** is exact — character count comes from pipecat's `TTSUsageMetricsData`, which reports `len(text)` of every chunk submitted to Cartesia's WebSocket (Cartesia's actual billing unit).
+- **STT cost** is approximated from session wall-clock duration. Pipecat's Deepgram service doesn't surface billed minutes directly, but `SmallWebRTCTransport` streams continuously, so wall clock should track billable minutes within rounding. `tts_audio_sec_observed` and `stt_audio_sec_observed` are recorded as cross-checks.
 
 For actual billed amounts, check each provider's dashboard.

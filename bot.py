@@ -16,7 +16,7 @@ from pipecat.frames.frames import (
     MetricsFrame,
     TTSAudioRawFrame,
 )
-from pipecat.metrics.metrics import LLMUsageMetricsData
+from pipecat.metrics.metrics import LLMUsageMetricsData, TTSUsageMetricsData
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -43,11 +43,11 @@ PRICE_ANTHROPIC_CACHE_READ_PER_MTOK = 0.30
 PRICE_ANTHROPIC_HAIKU_INPUT_PER_MTOK = 1.00
 PRICE_ANTHROPIC_HAIKU_OUTPUT_PER_MTOK = 5.00
 PRICE_DEEPGRAM_NOVA3_PER_MIN = 0.0077
-# Cartesia: 15 credits/sec of audio; $5 / 100_000 credits on Pro plan.
-# Actual audio seconds now derived from TTSAudioRawFrame bytes (ground truth),
-# not estimated from char count.
-CARTESIA_CREDITS_PER_SEC = 15
-PRICE_CARTESIA_PER_CREDIT = 5.00 / 100_000
+# Cartesia bills 1 credit per character submitted to the TTS WebSocket;
+# $5 / 100_000 credits on Pro plan = $0.00005 per character. Character count
+# comes from pipecat's TTSUsageMetricsData (exact len(text) sent to Cartesia),
+# not an estimate.
+PRICE_CARTESIA_PER_CHAR = 5.00 / 100_000
 
 # NOTE: cost-log.jsonl starts from the first session after this refactor
 # (2026-04-15+). Sessions logged before this (e.g. 2026-04-14) only exist as
@@ -61,6 +61,10 @@ class UsageAccumulator(BaseObserver):
         self.cache_read_tokens = 0
         self.cache_write_tokens = 0
         self.output_tokens = 0
+        # Exact character count submitted to Cartesia (the billing unit).
+        self.tts_chars = 0
+        # Observed audio length from TTSAudioRawFrame bytes — kept as a
+        # cross-check / observability metric, not load-bearing for cost.
         self.tts_audio_sec = 0.0
         # Cross-check against session_duration_sec; divergence would signal a
         # transport behavior change (e.g. VAD-gated audio_in).
@@ -111,6 +115,8 @@ class UsageAccumulator(BaseObserver):
                     # Anthropic's prompt_tokens already excludes cache reads/writes.
                     self.uncached_input_tokens += u.prompt_tokens
                     self.output_tokens += u.completion_tokens
+                elif isinstance(m, TTSUsageMetricsData):
+                    self.tts_chars += m.value
 
     def summary(self, session_duration_sec: float) -> dict:
         llm_input_cost = self.uncached_input_tokens / 1_000_000 * PRICE_ANTHROPIC_INPUT_PER_MTOK
@@ -126,8 +132,7 @@ class UsageAccumulator(BaseObserver):
         stt_minutes = session_duration_sec / 60
         stt_cost = stt_minutes * PRICE_DEEPGRAM_NOVA3_PER_MIN
 
-        tts_credits = self.tts_audio_sec * CARTESIA_CREDITS_PER_SEC
-        tts_cost = tts_credits * PRICE_CARTESIA_PER_CREDIT
+        tts_cost = self.tts_chars * PRICE_CARTESIA_PER_CHAR
 
         total = llm_cost + stt_cost + tts_cost
         return {
@@ -145,8 +150,8 @@ class UsageAccumulator(BaseObserver):
                 "cost_usd": round(stt_cost, 4),
             },
             "tts": {
-                "audio_sec": round(self.tts_audio_sec, 1),
-                "credits": round(tts_credits, 0),
+                "chars": self.tts_chars,
+                "audio_sec_observed": round(self.tts_audio_sec, 1),
                 "cost_usd": round(tts_cost, 4),
             },
             "total_cost_usd": round(total, 4),
@@ -592,8 +597,8 @@ async def bot(runner_args):
             "session_end": session_end.isoformat(),
             "session_duration_sec": summary["session_duration_sec"],
             "turns": len(turns),
-            "tts_audio_sec": summary["tts"]["audio_sec"],
-            "tts_credits": summary["tts"]["credits"],
+            "tts_chars": summary["tts"]["chars"],
+            "tts_audio_sec_observed": summary["tts"]["audio_sec_observed"],
             "stt_audio_sec_observed": summary["stt"]["audio_sec_observed"],
             "stt_minutes_billed": summary["stt"]["minutes"],
             "llm_uncached_input_tokens": summary["llm"]["uncached_input_tokens"],
