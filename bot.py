@@ -158,9 +158,9 @@ PROFILE_PATH = VOICE_TUTOR_DIR / "profile.md"
 # problem — revisit when the memory block starts dominating the system prompt.
 MEMORY_PATH = VOICE_TUTOR_DIR / "memory.md"
 WIKI_DIR = Path.home() / "second-brain" / "resources" / "wiki"
-COST_LOG_PATH = Path.home() / "second-brain" / "products" / "voice-tutor" / "cost-log.md"
+COST_LOG_PATH = Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "cost-log.md"
 COST_LOG_JSONL_PATH = COST_LOG_PATH.with_suffix(".jsonl")
-SESSION_ANALYSIS_DIR = Path.home() / "second-brain" / "products" / "voice-tutor"
+SESSION_ANALYSIS_DIR = Path.home() / "second-brain" / "products" / "voice-tutor" / "session-analyses"
 MIN_ANALYSIS_DURATION_SEC = 300
 MIN_SUMMARY_DURATION_SEC = 120
 
@@ -321,7 +321,7 @@ def generate_session_summary(stem: str, transcript: dict):
     try:
         client = anthropic.Anthropic()
         resp = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-haiku-4-5-20251001",
             max_tokens=512,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -343,7 +343,7 @@ def generate_session_analysis(stem: str, transcript: dict, summary: dict, tool_c
     try:
         client = anthropic.Anthropic()
         resp = client.messages.create(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-haiku-4-5-20251001",
             max_tokens=2048,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -408,6 +408,7 @@ async def bot(runner_args):
     tts = CartesiaTTSService(
         api_key=os.getenv("CARTESIA_API_KEY"),
         settings=CartesiaTTSService.Settings(
+            model="sonic-3",
             voice="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
         ),
     )

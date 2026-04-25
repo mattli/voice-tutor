@@ -42,7 +42,7 @@ Open `http://localhost:7860/client/` in a browser (or the Tailscale URL on phone
 
 - **STT**: Deepgram Nova-3 (speech → text)
 - **LLM**: Claude Sonnet 4.5 via Anthropic API (thinking)
-- **TTS**: Cartesia Sonic (text → speech)
+- **TTS**: Cartesia Sonic-3 (voice "British Reading Lady")
 - **Transport**: SmallWebRTC via Pipecat (browser ↔ server)
 
 ## Data
@@ -58,7 +58,7 @@ Stored at `~/.voice-tutor/`:
 When a session ends, the bot writes a sidecar `<session>.usage.json` next to the transcript with token counts, TTS characters, estimated audio minutes, and an estimated USD cost broken down by LLM / STT / TTS. It also:
 
 - prints a one-line summary to the bot log
-- appends a row to the session cost log at `~/second-brain/products/voice-tutor/cost-log.md` (a markdown table — one session per row, easy to scan in Obsidian)
+- appends a row to the session cost log at `~/second-brain/products/voice-tutor/validation/cost-log.md` (a markdown table — one session per row, easy to scan in Obsidian)
 
 Prices are hardcoded in `bot.py` (constants near the top, verified against the official pricing pages with source URLs in comments). Refresh them when vendors change pricing.
 
