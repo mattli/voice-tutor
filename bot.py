@@ -39,6 +39,9 @@ PRICE_ANTHROPIC_INPUT_PER_MTOK = 3.00
 PRICE_ANTHROPIC_OUTPUT_PER_MTOK = 15.00
 PRICE_ANTHROPIC_CACHE_WRITE_PER_MTOK = 3.75
 PRICE_ANTHROPIC_CACHE_READ_PER_MTOK = 0.30
+# Haiku 4.5 powers the post-session summary + analysis calls.
+PRICE_ANTHROPIC_HAIKU_INPUT_PER_MTOK = 1.00
+PRICE_ANTHROPIC_HAIKU_OUTPUT_PER_MTOK = 5.00
 PRICE_DEEPGRAM_NOVA3_PER_MIN = 0.0077
 # Cartesia: 15 credits/sec of audio; $5 / 100_000 credits on Pro plan.
 # Actual audio seconds now derived from TTSAudioRawFrame bytes (ground truth),
@@ -316,7 +319,7 @@ No preamble, no trailing prose.
 """
 
 
-def generate_session_summary(stem: str, transcript: dict):
+def generate_session_summary(stem: str, transcript: dict) -> dict | None:
     prompt = SUMMARY_PROMPT.format(transcript_json=json.dumps(transcript, indent=2))
     try:
         client = anthropic.Anthropic()
@@ -328,13 +331,14 @@ def generate_session_summary(stem: str, transcript: dict):
         text = resp.content[0].text.strip()
     except Exception as e:
         print(f"[session-summary] failed: {e}", file=sys.stderr, flush=True)
-        return
+        return None
     out_path = TRANSCRIPTS_DIR / f"{stem}.summary.md"
     out_path.write_text(text + "\n")
     print(f"[session-summary] wrote {out_path}", file=sys.stderr, flush=True)
+    return {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
 
 
-def generate_session_analysis(stem: str, transcript: dict, summary: dict, tool_calls: list[dict]):
+def generate_session_analysis(stem: str, transcript: dict, summary: dict, tool_calls: list[dict]) -> dict | None:
     prompt = ANALYSIS_PROMPT.format(
         usage_json=json.dumps(summary, indent=2),
         tool_calls_json=json.dumps(tool_calls, indent=2) if tool_calls else "[]",
@@ -350,11 +354,12 @@ def generate_session_analysis(stem: str, transcript: dict, summary: dict, tool_c
         analysis = resp.content[0].text
     except Exception as e:
         print(f"[session-analysis] failed: {e}", file=sys.stderr, flush=True)
-        return
+        return None
     header = f"# Session Analysis — {stem}\n\n"
     out_path = SESSION_ANALYSIS_DIR / f"session-analysis-{stem}.md"
     out_path.write_text(header + analysis)
     print(f"[session-analysis] wrote {out_path}", file=sys.stderr, flush=True)
+    return {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
 
 
 def build_system_instruction() -> str:
@@ -505,6 +510,38 @@ async def bot(runner_args):
         (TRANSCRIPTS_DIR / f"{stem}.json").write_text(json.dumps(transcript, indent=2))
 
         summary = usage.summary((session_end - session_start).total_seconds())
+
+        # Run post-session Haiku calls before finalizing the cost log so their
+        # tokens roll into the row. They were previously off-the-books — small
+        # (~$0.025/session) but unaccounted for vs the Anthropic dashboard.
+        post_input = 0
+        post_output = 0
+        if summary["session_duration_sec"] >= MIN_SUMMARY_DURATION_SEC:
+            u = generate_session_summary(stem, transcript)
+            if u:
+                post_input += u["input_tokens"]
+                post_output += u["output_tokens"]
+            summary_path = TRANSCRIPTS_DIR / f"{stem}.summary.md"
+            if summary_path.exists():
+                append_to_memory(transcript, summary_path.read_text())
+
+        if summary["session_duration_sec"] >= MIN_ANALYSIS_DURATION_SEC:
+            u = generate_session_analysis(stem, transcript, summary, usage.tool_calls)
+            if u:
+                post_input += u["input_tokens"]
+                post_output += u["output_tokens"]
+
+        post_cost = (
+            post_input / 1_000_000 * PRICE_ANTHROPIC_HAIKU_INPUT_PER_MTOK
+            + post_output / 1_000_000 * PRICE_ANTHROPIC_HAIKU_OUTPUT_PER_MTOK
+        )
+        summary["post_session"] = {
+            "input_tokens": post_input,
+            "output_tokens": post_output,
+            "cost_usd": round(post_cost, 4),
+        }
+        summary["total_cost_usd"] = round(summary["total_cost_usd"] + post_cost, 4)
+
         (TRANSCRIPTS_DIR / f"{stem}.usage.json").write_text(json.dumps(summary, indent=2))
         mins = summary["session_duration_sec"] / 60
         line = (
@@ -512,9 +549,15 @@ async def bot(runner_args):
             f"${summary['total_cost_usd']:.3f} "
             f"(llm ${summary['llm']['cost_usd']:.3f} · "
             f"stt ${summary['stt']['cost_usd']:.3f} · "
-            f"tts ${summary['tts']['cost_usd']:.3f})"
+            f"tts ${summary['tts']['cost_usd']:.3f} · "
+            f"post ${summary['post_session']['cost_usd']:.3f})"
         )
         print(line, flush=True)
+
+        # The "LLM" column in cost-log.md now means total LLM spend (live Sonnet
+        # + post-session Haiku) to match what the Anthropic dashboard reports.
+        # JSONL keeps the breakdown.
+        llm_total = summary["llm"]["cost_usd"] + summary["post_session"]["cost_usd"]
 
         COST_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         if not COST_LOG_PATH.exists():
@@ -523,6 +566,9 @@ async def bot(runner_args):
                 "One row per session. Costs are computed from ground-truth usage\n"
                 "(TTS audio bytes, LLM token counts, Deepgram streamed minutes).\n"
                 "Rates last verified 2026-04-15 against provider pricing pages.\n"
+                "The LLM column includes both live Sonnet and post-session Haiku\n"
+                "(matching the Anthropic dashboard); see `cost-log.jsonl` for the\n"
+                "live-vs-post-session breakdown.\n"
                 "Per-session raw usage is logged to `cost-log.jsonl` for auditing\n"
                 "(starting 2026-04-15 — earlier sessions have no raw-usage sidecar).\n\n"
                 "| Session start | Duration | Turns | Total | LLM | STT | TTS |\n"
@@ -533,7 +579,7 @@ async def bot(runner_args):
             f"| {mins:.1f} min "
             f"| {len(turns)} "
             f"| ${summary['total_cost_usd']:.3f} "
-            f"| ${summary['llm']['cost_usd']:.3f} "
+            f"| ${llm_total:.3f} "
             f"| ${summary['stt']['cost_usd']:.3f} "
             f"| ${summary['tts']['cost_usd']:.3f} |\n"
         )
@@ -554,23 +600,17 @@ async def bot(runner_args):
             "llm_cache_read_tokens": summary["llm"]["cache_read_tokens"],
             "llm_cache_write_tokens": summary["llm"]["cache_write_tokens"],
             "llm_output_tokens": summary["llm"]["output_tokens"],
+            "post_session_input_tokens": post_input,
+            "post_session_output_tokens": post_output,
             "cost_llm_usd": summary["llm"]["cost_usd"],
             "cost_stt_usd": summary["stt"]["cost_usd"],
             "cost_tts_usd": summary["tts"]["cost_usd"],
+            "cost_post_session_usd": summary["post_session"]["cost_usd"],
             "cost_total_usd": summary["total_cost_usd"],
             "tool_calls": usage.tool_calls,
         }
         with COST_LOG_JSONL_PATH.open("a") as f:
             f.write(json.dumps(jsonl_entry) + "\n")
-
-        if summary["session_duration_sec"] >= MIN_SUMMARY_DURATION_SEC:
-            generate_session_summary(stem, transcript)
-            summary_path = TRANSCRIPTS_DIR / f"{stem}.summary.md"
-            if summary_path.exists():
-                append_to_memory(transcript, summary_path.read_text())
-
-        if summary["session_duration_sec"] >= MIN_ANALYSIS_DURATION_SEC:
-            generate_session_analysis(stem, transcript, summary, usage.tool_calls)
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
