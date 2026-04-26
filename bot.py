@@ -7,6 +7,7 @@ from pathlib import Path
 
 import anthropic
 
+import documents
 import wiki
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -436,12 +437,33 @@ async def bot(runner_args):
         params=TransportParams(audio_out_enabled=True, audio_in_enabled=True),
     )
 
+    body = getattr(runner_args, "body", None) or {}
+    document_id = body.get("document_id")
+    session_id_override = body.get("session_id")
+
+    study_meta: dict | None = None
+    if document_id:
+        loaded = documents.load_document(document_id)
+        if loaded is None:
+            print(f"[bot] document_id={document_id} not found; falling back to regular mode", file=sys.stderr, flush=True)
+        else:
+            doc_title, doc_text = loaded
+            study_meta = {
+                "document_id": document_id,
+                "doc_title": doc_title,
+                "doc_text": doc_text,
+                "session_id": session_id_override or document_id,
+            }
+
     stt = DeepgramSTTService(
         api_key=os.getenv("DEEPGRAM_API_KEY"),
         settings=DeepgramSTTService.Settings(model="nova-3", language="en"),
     )
 
-    system_instruction = build_system_instruction()
+    system_instruction = build_system_instruction(
+        study={"doc_title": study_meta["doc_title"], "doc_text": study_meta["doc_text"]}
+        if study_meta else None
+    )
 
     llm = AnthropicLLMService(
         api_key=os.getenv("ANTHROPIC_API_KEY"),
@@ -462,7 +484,7 @@ async def bot(runner_args):
         ),
     )
 
-    tools = [wiki.tool_schema()] if WIKI_ENABLED else []
+    tools = [] if study_meta else ([wiki.tool_schema()] if WIKI_ENABLED else [])
     context = LLMContext(tools=ToolsSchema(standard_tools=tools))
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
@@ -471,7 +493,7 @@ async def bot(runner_args):
 
     usage = UsageAccumulator()
 
-    if WIKI_ENABLED:
+    if WIKI_ENABLED and not study_meta:
         llm.register_function("read_wiki_page", wiki.make_tool_handler(usage.mark_tool_call))
 
     pipeline = Pipeline([
@@ -514,7 +536,7 @@ async def bot(runner_args):
         if not turns:
             return
         TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-        stem = session_start.strftime("%Y-%m-%d-%H%M%S")
+        stem = study_meta["session_id"] if study_meta else session_start.strftime("%Y-%m-%d-%H%M%S")
         session_end = datetime.now()
         transcript = {
             "session_start": session_start.isoformat(),
@@ -602,6 +624,7 @@ async def bot(runner_args):
             f.write(row)
 
         jsonl_entry = {
+            "kind": "session",
             "session_id": session_start.strftime("%Y-%m-%dT%H%M%S"),
             "session_start": session_start.isoformat(),
             "session_end": session_end.isoformat(),
@@ -624,6 +647,10 @@ async def bot(runner_args):
             "cost_total_usd": summary["total_cost_usd"],
             "tool_calls": usage.tool_calls,
         }
+        if study_meta:
+            jsonl_entry["session_id"] = study_meta["session_id"]
+            jsonl_entry["mode"] = "study"
+            jsonl_entry["document_id"] = study_meta["document_id"]
         with COST_LOG_JSONL_PATH.open("a") as f:
             f.write(json.dumps(jsonl_entry) + "\n")
 
