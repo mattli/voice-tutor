@@ -208,6 +208,46 @@ Here is the session data:
 {transcript_json}
 """
 
+STUDY_BASE_INSTRUCTION = (
+    "You are a study companion helping the user understand a specific document "
+    "they have loaded. Help them engage actively — ask what they want to focus "
+    "on, explain concepts when asked, surface connections, push back when their "
+    "understanding is shaky, and let them lead the direction.\n\n"
+    "Reference the document directly. Quote short passages when useful. Don't "
+    "summarize the whole thing unprompted — wait for the user to point at what "
+    "they want to dig into.\n\n"
+    "Keep responses tight. One thought at a time. This is voice — long monologues "
+    "don't work."
+)
+
+ARTIFACT_PROMPT = """\
+You are writing a markdown recap of a voice-mode study session about a specific \
+document. Output ONLY markdown — no preamble, no trailing prose.
+
+Use this structure exactly:
+
+# Study session — {doc_title}
+Duration: {duration_mmss}
+
+## What we covered
+- short bullets, one per topic discussed
+
+## Key points
+### <topic>
+Substantive notes — paraphrase both sides, capture concrete claims, quote the \
+document where it sharpens the point. Two to four short paragraphs per topic.
+
+## Open threads
+Things raised but not resolved — questions to come back to. One bullet each. \
+Skip this section if there are none.
+
+### Document
+{doc_text}
+
+### Transcript
+{transcript_json}
+"""
+
 BASE_INSTRUCTION = (
     "You are a friendly, curious conversational partner and tutor. "
     "Be concise. Say one thought at a time, then let Matt respond. "
@@ -351,11 +391,26 @@ def generate_session_analysis(stem: str, transcript: dict, summary: dict, tool_c
     return {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
 
 
-def build_system_instruction() -> str:
+def build_system_instruction(study: dict | None = None) -> str:
+    """Assemble the system prompt.
+
+    Regular mode: base + profile + wiki INDEX + memory + most-recent transcript.
+    Study mode (study={doc_title, doc_text}): base + profile + the doc itself.
+    Study mode skips memory, the most-recent transcript, the wiki INDEX, and the
+    wiki tagline — the doc is the world for that session.
+    """
+    profile = load_profile()
+
+    if study is not None:
+        parts = [STUDY_BASE_INSTRUCTION]
+        if profile:
+            parts.append(f"\n## About the person you're talking to\n\n{profile}")
+        parts.append(f"\n## Document: {study['doc_title']}\n\n{study['doc_text']}")
+        return "\n".join(parts)
+
     base = BASE_INSTRUCTION + (WIKI_TAGLINE if WIKI_ENABLED else "")
     parts = [base]
 
-    profile = load_profile()
     if profile:
         parts.append(f"\n## About the person you're talking to\n\n{profile}")
 
