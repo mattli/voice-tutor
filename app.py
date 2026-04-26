@@ -14,6 +14,7 @@ from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pipecat.runner.types import SmallWebRTCRunnerArguments
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.request_handler import (
@@ -81,3 +82,12 @@ async def upload_document(file: UploadFile):
 @app.get("/api/documents")
 async def list_documents_route():
     return documents.list_documents()
+
+
+STUDY_HTML = Path(__file__).parent / "static" / "study.html"
+
+
+@app.get("/study/", include_in_schema=False)
+@app.get("/study", include_in_schema=False)
+async def study_page():
+    return FileResponse(STUDY_HTML, media_type="text/html")

@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Voice Tutor — Study</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+  .muted { color: #666; }
+  .card { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; cursor: pointer; }
+  .card.selected { border-color: #2a6df4; background: #eef4ff; }
+  .card.selected::before { content: "✓ "; color: #2a6df4; }
+  button { font-size: 1rem; padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid #2a6df4; background: #2a6df4; color: #fff; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.secondary { background: #fff; color: #2a6df4; }
+  .hidden { display: none; }
+  pre { white-space: pre-wrap; background: #f5f5f5; padding: 1rem; border-radius: 6px; }
+  .row { display: flex; gap: 0.75rem; align-items: center; margin: 0.75rem 0; }
+</style>
+</head>
+<body>
+
+<h1>Voice Tutor — Study</h1>
+<p class="muted">Pick a document or upload one, then start a voice session grounded in it.</p>
+
+<section id="picker">
+  <h2 style="font-size:1rem;">Documents</h2>
+  <div id="docList" class="muted">Loading…</div>
+  <form id="uploadForm" class="row">
+    <input type="file" id="fileInput" accept=".pdf,.md,.markdown,.txt" required />
+    <button type="submit" class="secondary">Upload</button>
+  </form>
+  <div class="row">
+    <button id="startBtn" disabled>Start session</button>
+    <span id="pickerStatus" class="muted"></span>
+  </div>
+</section>
+
+<section id="session" class="hidden">
+  <p>Session about: <strong id="sessionDocTitle"></strong></p>
+  <audio id="remoteAudio" autoplay playsinline></audio>
+  <div class="row">
+    <button id="endBtn">End session</button>
+    <span id="sessionStatus" class="muted">Connecting…</span>
+  </div>
+</section>
+
+<section id="ended" class="hidden">
+  <p>Session ended. Recap will be saved to <code>~/.voice-tutor/artifacts/<span id="endedSessionId"></span>.md</code> shortly.</p>
+  <div class="row">
+    <button id="refreshBtn" class="secondary">Refresh</button>
+    <button id="newBtn" class="secondary">New session</button>
+  </div>
+  <pre id="artifactView" class="hidden"></pre>
+</section>
+
+<script>
+const $ = id => document.getElementById(id);
+const show = id => { ['picker','session','ended'].forEach(s => $(s).classList.toggle('hidden', s !== id)); };
+
+let selectedDocId = null;
+let selectedDocTitle = null;
+let pc = null;
+let pcId = null;
+let sessionId = null;
+
+async function loadDocs() {
+  const docs = await fetch('/api/documents').then(r => r.json());
+  const list = $('docList');
+  if (!docs.length) { list.textContent = 'No documents yet — upload one to start.'; return; }
+  list.innerHTML = '';
+  for (const d of docs) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.dataset.id = d.document_id;
+    card.innerHTML = `<strong>${escapeHtml(d.title)}</strong><br><span class="muted">${d.char_count.toLocaleString()} chars · ${d.uploaded_at.slice(0,16)}</span>`;
+    card.onclick = () => selectDoc(d.document_id, d.title, card);
+    list.appendChild(card);
+  }
+}
+
+function selectDoc(id, title, cardEl) {
+  selectedDocId = id;
+  selectedDocTitle = title;
+  document.querySelectorAll('.card.selected').forEach(c => c.classList.remove('selected'));
+  cardEl.classList.add('selected');
+  $('startBtn').disabled = false;
+}
+
+function escapeHtml(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+$('uploadForm').onsubmit = async e => {
+  e.preventDefault();
+  const file = $('fileInput').files[0];
+  if (!file) return;
+  $('pickerStatus').textContent = 'Uploading…';
+  const fd = new FormData();
+  fd.append('file', file);
+  const r = await fetch('/api/documents', { method: 'POST', body: fd });
+  if (!r.ok) {
+    $('pickerStatus').textContent = 'Upload failed: ' + (await r.text());
+    return;
+  }
+  $('pickerStatus').textContent = 'Uploaded.';
+  $('fileInput').value = '';
+  await loadDocs();
+};
+
+$('startBtn').onclick = async () => {
+  if (!selectedDocId) return;
+  sessionId = crypto.randomUUID();
+  $('sessionDocTitle').textContent = selectedDocTitle;
+  show('session');
+  $('sessionStatus').textContent = 'Connecting…';
+  await connect();
+};
+
+async function connect() {
+  pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+  pc.addTransceiver('audio', { direction: 'sendrecv' });
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  for (const t of stream.getTracks()) pc.addTrack(t, stream);
+  pc.ontrack = ev => { $('remoteAudio').srcObject = ev.streams[0]; };
+  pc.onconnectionstatechange = () => { $('sessionStatus').textContent = 'State: ' + pc.connectionState; };
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  const resp = await fetch('/api/offer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sdp: offer.sdp,
+      type: offer.type,
+      request_data: { document_id: selectedDocId, session_id: sessionId },
+    }),
+  });
+  const answer = await resp.json();
+  pcId = answer.pc_id;
+  await pc.setRemoteDescription(answer);
+
+  pc.onicecandidate = async ev => {
+    if (!ev.candidate) return;
+    await fetch('/api/offer', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pc_id: pcId, candidates: [ev.candidate.toJSON()] }),
+    });
+  };
+}
+
+$('endBtn').onclick = () => {
+  if (pc) pc.close();
+  $('endedSessionId').textContent = sessionId;
+  show('ended');
+};
+
+$('refreshBtn').onclick = async () => {
+  const r = await fetch(`/api/sessions/${sessionId}/artifact`);
+  const view = $('artifactView');
+  if (r.ok) {
+    view.textContent = await r.text();
+    view.classList.remove('hidden');
+  } else {
+    view.textContent = '(not ready yet — try again in a few seconds)';
+    view.classList.remove('hidden');
+  }
+};
+
+$('newBtn').onclick = () => {
+  selectedDocId = null;
+  selectedDocTitle = null;
+  $('startBtn').disabled = true;
+  $('artifactView').classList.add('hidden');
+  document.querySelectorAll('.card.selected').forEach(c => c.classList.remove('selected'));
+  show('picker');
+  loadDocs();
+};
+
+loadDocs();
+</script>
+
+</body>
+</html>
