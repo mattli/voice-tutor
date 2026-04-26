@@ -50,6 +50,34 @@ Open `http://localhost:7860/client/` in a browser (or the Tailscale URL on phone
 - **TTS**: Cartesia Sonic-3 (voice "British Reading Lady")
 - **Transport**: SmallWebRTC via Pipecat (browser ↔ server)
 
+## Study companion mode
+
+A document-grounded variant of the regular voice tutor.
+
+- Open `http://localhost:7860/study/` (or the Tailscale URL with `/study/` appended on phone)
+- Upload a PDF / Markdown / plain-text doc (≤5MB, ≤150K characters of extracted text)
+- Pick the doc, click **Start session**, grant mic access, talk through it
+- Click **End session** when done; the WebRTC connection closes and the existing
+  on-disconnect pipeline runs (transcript save + summary + analysis)
+- A markdown recap is generated asynchronously by Haiku 4.5 and lands at
+  `~/.voice-tutor/artifacts/<session-id>.md`
+- The "Refresh" button on the ended view fetches `GET /api/sessions/<id>/artifact`
+  and renders the markdown inline once it exists
+
+Study sessions skip `memory.md`, the most-recent transcript, and the wiki INDEX —
+the doc is the world for that session. `profile.md` still loads.
+
+Storage:
+- `~/.voice-tutor/documents/<uuid>-<original-filename>` — original upload
+- `~/.voice-tutor/documents/<uuid>.txt` — extracted text used at session start
+- `~/.voice-tutor/transcripts/<uuid>.json` — study session transcripts (UUID
+  stem instead of datetime; the `/study/` page generates the UUID client-side)
+- `~/.voice-tutor/artifacts/<uuid>.md` — the recap
+- A separate `cost-log.jsonl` row with `kind: "artifact"` accounts for the
+  artifact-generation Haiku call
+
+The regular `/client/` flow is untouched — same UI, same behavior, same prompt.
+
 ## Data
 
 Stored at `~/.voice-tutor/`:
