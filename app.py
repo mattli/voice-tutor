@@ -12,7 +12,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI
+from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pipecat.runner.types import SmallWebRTCRunnerArguments
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
@@ -24,6 +24,7 @@ from pipecat.transports.smallwebrtc.request_handler import (
 from pipecat_ai_small_webrtc_prebuilt.frontend import SmallWebRTCPrebuiltUI
 
 import bot
+import documents
 
 HOST = os.getenv("VOICE_TUTOR_HOST", "0.0.0.0")
 small_webrtc_handler = SmallWebRTCRequestHandler(esp32_mode=False, host=HOST)
@@ -66,3 +67,17 @@ async def offer(request: SmallWebRTCRequest, background_tasks: BackgroundTasks):
 async def ice_candidate(request: SmallWebRTCPatchRequest):
     await small_webrtc_handler.handle_patch_request(request)
     return {"status": "success"}
+
+
+@app.post("/api/documents")
+async def upload_document(file: UploadFile):
+    try:
+        raw = await file.read()
+        return documents.save_upload(file.filename or "untitled", raw)
+    except documents.UploadError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@app.get("/api/documents")
+async def list_documents_route():
+    return documents.list_documents()
