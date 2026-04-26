@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import sys
@@ -160,6 +161,7 @@ class UsageAccumulator(BaseObserver):
 
 VOICE_TUTOR_DIR = Path.home() / ".voice-tutor"
 TRANSCRIPTS_DIR = VOICE_TUTOR_DIR / "transcripts"
+ARTIFACTS_DIR = VOICE_TUTOR_DIR / "artifacts"
 PROFILE_PATH = VOICE_TUTOR_DIR / "profile.md"
 # Accumulating memory: one dated section per session, append-only.
 # Future: when this file exceeds ~2K tokens, compact older entries by summarizing
@@ -390,6 +392,56 @@ def generate_session_analysis(stem: str, transcript: dict, summary: dict, tool_c
     out_path.write_text(header + analysis)
     print(f"[session-analysis] wrote {out_path}", file=sys.stderr, flush=True)
     return {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
+
+
+async def generate_artifact(session_id: str, study_meta: dict, transcript: dict, duration_sec: float):
+    """Fire-and-forget Haiku call writing ~/.voice-tutor/artifacts/<session_id>.md.
+
+    Writes a separate row to cost-log.jsonl with kind="artifact" so the cost is
+    auditable without retroactively patching the synchronous session row.
+    """
+    duration_mmss = f"{int(duration_sec // 60)}:{int(duration_sec % 60):02d}"
+    prompt = ARTIFACT_PROMPT.format(
+        doc_title=study_meta["doc_title"],
+        doc_text=study_meta["doc_text"],
+        duration_mmss=duration_mmss,
+        transcript_json=json.dumps(transcript, indent=2),
+    )
+    try:
+        client = anthropic.Anthropic()
+        resp = await asyncio.to_thread(
+            client.messages.create,
+            model="claude-haiku-4-5-20251001",
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        markdown = resp.content[0].text
+    except Exception as e:
+        print(f"[artifact] failed for session_id={session_id}: {e}", file=sys.stderr, flush=True)
+        return
+
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = ARTIFACTS_DIR / f"{session_id}.md"
+    out_path.write_text(markdown)
+    print(f"[artifact] wrote {out_path}", file=sys.stderr, flush=True)
+
+    in_tok = resp.usage.input_tokens
+    out_tok = resp.usage.output_tokens
+    cost = (
+        in_tok / 1_000_000 * PRICE_ANTHROPIC_HAIKU_INPUT_PER_MTOK
+        + out_tok / 1_000_000 * PRICE_ANTHROPIC_HAIKU_OUTPUT_PER_MTOK
+    )
+    row = {
+        "kind": "artifact",
+        "session_id": session_id,
+        "document_id": study_meta["document_id"],
+        "input_tokens": in_tok,
+        "output_tokens": out_tok,
+        "cost_usd": round(cost, 4),
+    }
+    COST_LOG_JSONL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with COST_LOG_JSONL_PATH.open("a") as f:
+        f.write(json.dumps(row) + "\n")
 
 
 def build_system_instruction(study: dict | None = None) -> str:
@@ -653,6 +705,14 @@ async def bot(runner_args):
             jsonl_entry["document_id"] = study_meta["document_id"]
         with COST_LOG_JSONL_PATH.open("a") as f:
             f.write(json.dumps(jsonl_entry) + "\n")
+
+        if study_meta:
+            asyncio.create_task(generate_artifact(
+                session_id=study_meta["session_id"],
+                study_meta=study_meta,
+                transcript=transcript,
+                duration_sec=summary["session_duration_sec"],
+            ))
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):

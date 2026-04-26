@@ -91,3 +91,15 @@ STUDY_HTML = Path(__file__).parent / "static" / "study.html"
 @app.get("/study", include_in_schema=False)
 async def study_page():
     return FileResponse(STUDY_HTML, media_type="text/html")
+
+
+ARTIFACTS_DIR = Path.home() / ".voice-tutor" / "artifacts"
+
+
+@app.get("/api/sessions/{session_id}/artifact")
+async def get_artifact(session_id: str):
+    safe_id = Path(session_id).name  # belt and suspenders against path traversal
+    path = ARTIFACTS_DIR / f"{safe_id}.md"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="artifact not ready or not found")
+    return FileResponse(path, media_type="text/markdown")
