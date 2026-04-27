@@ -227,28 +227,41 @@ ARTIFACT_PROMPT = """\
 You are writing a markdown recap of a voice-mode study session about a specific \
 document. Output ONLY markdown — no preamble, no trailing prose.
 
+SCOPE — read carefully:
+- The recap covers ONLY what was actually discussed in the transcript below.
+- The document is provided as REFERENCE — use it to quote passages the user \
+pointed at, to disambiguate vague references, and to get terms/names right. \
+Do NOT summarize sections of the document that did not come up in conversation.
+- If the conversation was short or covered only one topic, the recap is short \
+and covers only that topic. Do not pad. Do not invent topics.
+- If a topic was named but not actually explored, it belongs in "Open threads", \
+not "Key points".
+
 Use this structure exactly:
 
 # Study session — {doc_title}
 Duration: {duration_mmss}
 
 ## What we covered
-- short bullets, one per topic discussed
+- short bullets, one per topic ACTUALLY discussed (not topics merely mentioned)
 
 ## Key points
 ### <topic>
-Substantive notes — paraphrase both sides, capture concrete claims, quote the \
-document where it sharpens the point. Two to four short paragraphs per topic.
+Substantive notes on what was said in the conversation about this topic — \
+paraphrase the user's reasoning and the tutor's responses, capture concrete \
+claims that were made, quote the document only where it sharpens a point that \
+came up. Two to four short paragraphs per topic. Omit this section entirely \
+if nothing was discussed in enough depth to warrant it.
 
 ## Open threads
 Things raised but not resolved — questions to come back to. One bullet each. \
 Skip this section if there are none.
 
-### Document
-{doc_text}
-
 ### Transcript
 {transcript_json}
+
+### Document (reference only — do not summarize)
+{doc_text}
 """
 
 BASE_INSTRUCTION = (
