@@ -9,15 +9,19 @@ The voice pipeline lives in bot.py; this module only handles HTTP.
 """
 
 import os
+import uuid
 from contextlib import asynccontextmanager
+from http import HTTPMethod
 from pathlib import Path
+from typing import Any, Dict
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pipecat.runner.types import SmallWebRTCRunnerArguments
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.request_handler import (
+    IceCandidate,
     SmallWebRTCPatchRequest,
     SmallWebRTCRequest,
     SmallWebRTCRequestHandler,
@@ -68,6 +72,67 @@ async def offer(request: SmallWebRTCRequest, background_tasks: BackgroundTasks):
 async def ice_candidate(request: SmallWebRTCPatchRequest):
     await small_webrtc_handler.handle_patch_request(request)
     return {"status": "success"}
+
+
+# RTVI client (used by the pipecat prebuilt UI at /client/) bootstraps via
+# POST /start, then routes its WebRTC offer/patch through the per-session
+# proxy. Both endpoints mirror pipecat.runner.run.main's /start + /sessions
+# handlers so the prebuilt UI keeps working alongside our own /study/ flow,
+# which talks directly to /api/offer.
+active_sessions: Dict[str, Dict[str, Any]] = {}
+
+
+@app.post("/start")
+async def rtvi_start(request: Request):
+    try:
+        request_data = await request.json()
+    except Exception:
+        request_data = {}
+    session_id = str(uuid.uuid4())
+    active_sessions[session_id] = request_data.get("body") or {}
+    result: Dict[str, Any] = {"sessionId": session_id}
+    if request_data.get("enableDefaultIceServers"):
+        result["iceConfig"] = {
+            "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+        }
+    return result
+
+
+@app.api_route(
+    "/sessions/{session_id}/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+)
+async def rtvi_proxy(
+    session_id: str, path: str, request: Request, background_tasks: BackgroundTasks
+):
+    active_session = active_sessions.get(session_id)
+    if active_session is None:
+        return Response(content="Invalid or not-yet-ready session_id", status_code=404)
+
+    if path.endswith("api/offer"):
+        try:
+            body = await request.json()
+            if request.method == HTTPMethod.POST.value:
+                webrtc_request = SmallWebRTCRequest(
+                    sdp=body["sdp"],
+                    type=body["type"],
+                    pc_id=body.get("pc_id"),
+                    restart_pc=body.get("restart_pc"),
+                    request_data=body.get("request_data")
+                    or body.get("requestData")
+                    or active_session,
+                )
+                return await offer(webrtc_request, background_tasks)
+            if request.method == HTTPMethod.PATCH.value:
+                patch = SmallWebRTCPatchRequest(
+                    pc_id=body["pc_id"],
+                    candidates=[IceCandidate(**c) for c in body.get("candidates", [])],
+                )
+                return await ice_candidate(patch)
+        except Exception:
+            return Response(content="Invalid WebRTC request", status_code=400)
+
+    return Response(status_code=200)
 
 
 @app.post("/api/documents")

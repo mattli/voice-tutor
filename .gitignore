@@ -11,3 +11,6 @@ wheels/
 
 # Environment variables
 .env
+
+# Runtime logs (created by start.sh tee)
+*.log

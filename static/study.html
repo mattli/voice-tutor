@@ -124,6 +124,11 @@ async function connect() {
   pc.ontrack = ev => { $('remoteAudio').srcObject = ev.streams[0]; };
   pc.onconnectionstatechange = () => { $('sessionStatus').textContent = 'State: ' + pc.connectionState; };
 
+  // Open and drain pipecat's RTVI data channel so the server-side queue
+  // doesn't fill up. We don't render the events — this just keeps them flowing.
+  const dc = pc.createDataChannel('messages');
+  dc.onmessage = () => {};
+
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
 
