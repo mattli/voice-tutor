@@ -2,11 +2,34 @@
 
 Self-hosted voice conversation service using Pipecat, Claude, and persistent memory. Runs on Mac Mini, accessed from phone browser via Tailscale.
 
-## Setup
+## Local development setup
 
-### API Keys
+Going from a fresh machine to a running tutor.
 
-Create a `.env` file with:
+### 1. Clone
+
+```bash
+git clone https://github.com/mattli/voice-tutor.git
+cd voice-tutor
+```
+
+### 2. Install dependencies
+
+The project uses [`uv`](https://github.com/astral-sh/uv). If it's not installed:
+
+```bash
+brew install uv
+```
+
+Then:
+
+```bash
+uv sync
+```
+
+### 3. API keys
+
+Create a `.env` file in the repo root:
 
 ```
 ANTHROPIC_API_KEY=your-key
@@ -19,21 +42,52 @@ CARTESIA_API_KEY=your-key
 # WIKI_ENABLED=false
 ```
 
-### Install
+`.env` is gitignored — never commit it.
+
+### 4. Personal data directory
+
+The app reads and writes `~/.voice-tutor/`. Create it:
 
 ```bash
-uv sync
+mkdir -p ~/.voice-tutor
 ```
 
-### Tailscale HTTPS
+Optional but recommended: seed `~/.voice-tutor/profile.md` with a short
+identity blurb. The model loads it verbatim into the system prompt so the
+tutor knows who it's talking to. A few sentences is enough; see the **Data**
+section below for the full layout.
 
-To access from phone, enable Tailscale Serve:
+If you want to carry over an existing setup from another machine, copy the
+whole directory over:
+
+```bash
+scp -r user@other-host:~/.voice-tutor/ ~/.voice-tutor/
+```
+
+### 5. Wiki integration (optional)
+
+If `WIKI_ENABLED=true` (the default), `wiki.py` reads from
+`~/second-brain/resources/wiki/`. Either point that directory at your own
+wiki, or set `WIKI_ENABLED=false` in `.env` to skip the integration entirely.
+
+### 6. Run
+
+```bash
+./start.sh
+```
+
+The server listens on `:7860`. Open `http://localhost:7860/client/` in a
+browser (open chat) or `http://localhost:7860/study/` (study mode).
+
+### Tailscale HTTPS (for phone access)
+
+To access from your phone over Tailscale, enable Tailscale Serve:
 
 ```bash
 tailscale serve --bg 7860
 ```
 
-Then open `https://matts-mac-mini.taild1f9b7.ts.net/client/` on your phone.
+Then open `https://<host>.<tailnet>.ts.net/client/` on your phone.
 
 ## Usage
 
