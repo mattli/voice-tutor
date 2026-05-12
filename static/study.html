@@ -9,8 +9,7 @@
   h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
   .muted { color: #666; }
   .card { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; cursor: pointer; }
-  .card.selected { border-color: #2a6df4; background: #eef4ff; }
-  .card.selected::before { content: "✓ "; color: #2a6df4; }
+  .card:hover { border-color: #2a6df4; }
   button { font-size: 1rem; padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid #2a6df4; background: #2a6df4; color: #fff; cursor: pointer; }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
   button.secondary { background: #fff; color: #2a6df4; }
@@ -35,7 +34,6 @@
     <button type="submit" class="secondary">Upload</button>
   </form>
   <div class="row">
-    <button id="startBtn" disabled>Start session</button>
     <span id="pickerStatus" class="muted"></span>
   </div>
 </section>
@@ -44,8 +42,10 @@
   <p>Session about: <strong id="sessionDocTitle"></strong></p>
   <audio id="remoteAudio" autoplay playsinline></audio>
   <div class="row">
-    <button id="endBtn">End session</button>
-    <span id="sessionStatus" class="muted">Connecting…</span>
+    <button id="startBtn">Start session</button>
+    <button id="endBtn" class="hidden">End session</button>
+    <button id="backBtn" class="secondary">Back</button>
+    <span id="sessionStatus" class="muted"></span>
   </div>
 </section>
 
@@ -83,17 +83,20 @@ async function loadDocs() {
     card.className = 'card';
     card.dataset.id = d.document_id;
     card.innerHTML = `<strong>${escapeHtml(d.title)}</strong><br><span class="muted">${d.char_count.toLocaleString()} chars · ${d.uploaded_at.slice(0,10)}</span>`;
-    card.onclick = () => selectDoc(d.document_id, d.title, card);
+    card.onclick = () => selectDoc(d.document_id, d.title);
     list.appendChild(card);
   }
 }
 
-function selectDoc(id, title, cardEl) {
+function selectDoc(id, title) {
   selectedDocId = id;
   selectedDocTitle = title;
-  document.querySelectorAll('.card.selected').forEach(c => c.classList.remove('selected'));
-  cardEl.classList.add('selected');
-  $('startBtn').disabled = false;
+  $('sessionDocTitle').textContent = title;
+  $('sessionStatus').textContent = '';
+  $('startBtn').classList.remove('hidden');
+  $('endBtn').classList.add('hidden');
+  $('backBtn').classList.remove('hidden');
+  show('session');
 }
 
 function escapeHtml(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -118,10 +121,17 @@ $('uploadForm').onsubmit = async e => {
 $('startBtn').onclick = async () => {
   if (!selectedDocId) return;
   sessionId = crypto.randomUUID();
-  $('sessionDocTitle').textContent = selectedDocTitle;
-  show('session');
+  $('startBtn').classList.add('hidden');
+  $('backBtn').classList.add('hidden');
+  $('endBtn').classList.remove('hidden');
   $('sessionStatus').textContent = 'Connecting…';
   await connect();
+};
+
+$('backBtn').onclick = () => {
+  selectedDocId = null;
+  selectedDocTitle = null;
+  show('picker');
 };
 
 async function connect() {
@@ -225,9 +235,7 @@ $('newBtn').onclick = () => {
   selectedDocTitle = null;
   sessionId = null;
   connectedAt = null;
-  $('startBtn').disabled = true;
   $('artifactView').classList.add('hidden');
-  document.querySelectorAll('.card.selected').forEach(c => c.classList.remove('selected'));
   show('picker');
   loadDocs();
 };
