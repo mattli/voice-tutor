@@ -50,7 +50,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/client", SmallWebRTCPrebuiltUI)
+app.mount("/chat", SmallWebRTCPrebuiltUI)
 
 
 @app.post("/api/offer")
@@ -74,7 +74,7 @@ async def ice_candidate(request: SmallWebRTCPatchRequest):
     return {"status": "success"}
 
 
-# RTVI client (used by the pipecat prebuilt UI at /client/) bootstraps via
+# RTVI client (used by the pipecat prebuilt UI at /chat/) bootstraps via
 # POST /start, then routes its WebRTC offer/patch through the per-session
 # proxy. Both endpoints mirror pipecat.runner.run.main's /start + /sessions
 # handlers so the prebuilt UI keeps working alongside our own /study/ flow,

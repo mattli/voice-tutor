@@ -1,13 +1,13 @@
 # Voice Tutor
 
-## HTTP routing — `/client/` (prebuilt RTVI UI) requires three routes
+## HTTP routing — `/chat/` (prebuilt RTVI UI) requires three routes
 
-The pipecat prebuilt client at `/client/` does NOT just call `/api/offer`. It expects:
+The pipecat prebuilt client mounted at `/chat/` does NOT just call `/api/offer`. It expects:
 1. `POST /start` → returns `{sessionId, iceConfig?}`
 2. `POST /sessions/{sessionId}/api/offer` → forwards to our `offer()` handler
 3. `PATCH /sessions/{sessionId}/api/ice-candidate` → forwards to our `ice_candidate()` handler
 
-These mirror `pipecat.runner.run.main`. If you change `app.py`'s routing, do not delete or rename them — `/client/` will silently break (Not Found, immediate disconnect) while `/study/` keeps working (it talks to `/api/offer` directly).
+These mirror `pipecat.runner.run.main`. If you change `app.py`'s routing, do not delete or rename them — `/chat/` will silently break (Not Found, immediate disconnect) while `/study/` keeps working (it talks to `/api/offer` directly).
 
 ## Pipecat upgrades
 
