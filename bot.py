@@ -281,6 +281,14 @@ WIKI_TAGLINE = (
     "connect ideas, and reference things he's been reading and learning about."
 )
 
+# Restated at the very end of the system prompt so it stays close to the model's
+# next-token decision after a long doc / wiki / memory block. Recency matters.
+BREVITY_REMINDER = (
+    "\n\n# Reminder\n\n"
+    "Voice mode. One thought per turn. One to two sentences. "
+    "Then stop and let the user respond. Never monologue."
+)
+
 
 def load_profile() -> str:
     if PROFILE_PATH.exists():
@@ -472,6 +480,7 @@ def build_system_instruction(study: dict | None = None) -> str:
         if profile:
             parts.append(f"\n## About the person you're talking to\n\n{profile}")
         parts.append(f"\n## Document: {study['doc_title']}\n\n{study['doc_text']}")
+        parts.append(BREVITY_REMINDER)
         return "\n".join(parts)
 
     base = BASE_INSTRUCTION + (WIKI_TAGLINE if WIKI_ENABLED else "")
@@ -493,6 +502,7 @@ def build_system_instruction(study: dict | None = None) -> str:
     if most_recent:
         parts.append(f"\n# Most recent session\n\n{most_recent}")
 
+    parts.append(BREVITY_REMINDER)
     return "\n".join(parts)
 
 
@@ -618,7 +628,12 @@ async def bot(runner_args):
         # (~$0.025/session) but unaccounted for vs the Anthropic dashboard.
         post_input = 0
         post_output = 0
-        if summary["session_duration_sec"] >= MIN_SUMMARY_DURATION_SEC:
+        # Study sessions are self-contained: the per-doc recap in
+        # ~/.voice-tutor/artifacts/ is their complete record. Skip the
+        # open-chat summary (which would pollute memory.md) and the vault
+        # session-analysis (which is shaped for the open-chat thread).
+        is_study = study_meta is not None
+        if not is_study and summary["session_duration_sec"] >= MIN_SUMMARY_DURATION_SEC:
             u = generate_session_summary(stem, transcript)
             if u:
                 post_input += u["input_tokens"]
@@ -627,7 +642,7 @@ async def bot(runner_args):
             if summary_path.exists():
                 append_to_memory(transcript, summary_path.read_text())
 
-        if summary["session_duration_sec"] >= MIN_ANALYSIS_DURATION_SEC:
+        if not is_study and summary["session_duration_sec"] >= MIN_ANALYSIS_DURATION_SEC:
             u = generate_session_analysis(stem, transcript, summary, usage.tool_calls)
             if u:
                 post_input += u["input_tokens"]
