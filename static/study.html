@@ -17,6 +17,9 @@
   .hidden { display: none; }
   pre { white-space: pre-wrap; background: #f5f5f5; padding: 1rem; border-radius: 6px; }
   .row { display: flex; gap: 0.75rem; align-items: center; margin: 0.75rem 0; }
+  #artifactView { background: #f5f5f5; padding: 1rem; border-radius: 6px; }
+  #artifactView h1, #artifactView h2, #artifactView h3 { margin-top: 1rem; }
+  #artifactView :first-child { margin-top: 0; }
 </style>
 </head>
 <body>
@@ -47,13 +50,14 @@
 </section>
 
 <section id="ended" class="hidden">
-  <p>Session ended. Recap will be saved to <code>~/.voice-tutor/artifacts/<span id="endedSessionId"></span>.md</code> shortly.</p>
+  <p id="endedStatus" class="muted">Generating recap…</p>
+  <div id="artifactView" class="hidden"></div>
   <div class="row">
-    <button id="refreshBtn" class="secondary">Refresh</button>
     <button id="newBtn" class="secondary">New session</button>
   </div>
-  <pre id="artifactView" class="hidden"></pre>
 </section>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -122,7 +126,17 @@ async function connect() {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   for (const t of stream.getTracks()) pc.addTrack(t, stream);
   pc.ontrack = ev => { $('remoteAudio').srcObject = ev.streams[0]; };
-  pc.onconnectionstatechange = () => { $('sessionStatus').textContent = 'State: ' + pc.connectionState; };
+  pc.onconnectionstatechange = () => {
+    const label = {
+      'new': 'Connecting…',
+      'connecting': 'Connecting…',
+      'connected': 'Listening — speak whenever you’re ready',
+      'disconnected': 'Disconnected',
+      'failed': 'Connection failed',
+      'closed': 'Disconnected',
+    }[pc.connectionState] || pc.connectionState;
+    $('sessionStatus').textContent = label;
+  };
 
   // Open and drain pipecat's RTVI data channel so the server-side queue
   // doesn't fill up. We don't render the events — this just keeps them flowing.
@@ -155,27 +169,40 @@ async function connect() {
   };
 }
 
+let pollTimer = null;
+
 $('endBtn').onclick = () => {
   if (pc) pc.close();
-  $('endedSessionId').textContent = sessionId;
   show('ended');
+  $('endedStatus').textContent = 'Generating recap…';
+  $('artifactView').classList.add('hidden');
+  pollArtifact();
 };
 
-$('refreshBtn').onclick = async () => {
-  const r = await fetch(`/api/sessions/${sessionId}/artifact`);
-  const view = $('artifactView');
-  if (r.ok) {
-    view.textContent = await r.text();
+async function pollArtifact() {
+  if (pollTimer) clearInterval(pollTimer);
+  const target = sessionId;
+  const tick = async () => {
+    if (target !== sessionId) return;  // user moved on
+    const r = await fetch(`/api/sessions/${target}/artifact`);
+    if (!r.ok) return;
+    clearInterval(pollTimer);
+    pollTimer = null;
+    const md = await r.text();
+    const view = $('artifactView');
+    view.innerHTML = window.marked ? marked.parse(md) : md;
     view.classList.remove('hidden');
-  } else {
-    view.textContent = '(not ready yet — try again in a few seconds)';
-    view.classList.remove('hidden');
-  }
-};
+    $('endedStatus').textContent = 'Recap ready.';
+  };
+  tick();
+  pollTimer = setInterval(tick, 2000);
+}
 
 $('newBtn').onclick = () => {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   selectedDocId = null;
   selectedDocTitle = null;
+  sessionId = null;
   $('startBtn').disabled = true;
   $('artifactView').classList.add('hidden');
   document.querySelectorAll('.card.selected').forEach(c => c.classList.remove('selected'));
