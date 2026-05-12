@@ -76,7 +76,7 @@ wiki, or set `WIKI_ENABLED=false` in `.env` to skip the integration entirely.
 ./start.sh
 ```
 
-The server listens on `:7860`. Open `http://localhost:7860/client/` in a
+The server listens on `:7860`. Open `http://localhost:7860/chat/` in a
 browser (open chat) or `http://localhost:7860/study/` (study mode).
 
 ### Tailscale HTTPS (for phone access)
@@ -87,7 +87,7 @@ To access from your phone over Tailscale, enable Tailscale Serve:
 tailscale serve --bg 7860
 ```
 
-Then open `https://<host>.<tailnet>.ts.net/client/` on your phone.
+Then open `https://<host>.<tailnet>.ts.net/chat/` on your phone.
 
 ## Usage
 
@@ -95,7 +95,7 @@ Then open `https://<host>.<tailnet>.ts.net/client/` on your phone.
 ./start.sh
 ```
 
-Open `http://localhost:7860/client/` in a browser (or the Tailscale URL on phone).
+Open `http://localhost:7860/chat/` in a browser (or the Tailscale URL on phone).
 
 ## Architecture
 
@@ -104,22 +104,43 @@ Open `http://localhost:7860/client/` in a browser (or the Tailscale URL on phone
 - **TTS**: Cartesia Sonic-3 (voice "British Reading Lady")
 - **Transport**: SmallWebRTC via Pipecat (browser ↔ server)
 
+## Modes
+
+Two voice modes share the same pipeline (Deepgram → Sonnet → Cartesia), the same
+post-session work (transcript save → summary → memory append → analysis), and the
+same cross-session memory (`profile.md`, `memory.md`). They differ in what
+context the model gets in-session and whether a recap is generated:
+
+| | `/chat/` (open chat) | `/study/` (doc-grounded) |
+|---|---|---|
+| Persona | General tutor | Study companion (different system prompt) |
+| `profile.md` | Loaded | Loaded |
+| `memory.md` | Loaded | Loaded |
+| Wiki INDEX in prompt | Yes (if `WIKI_ENABLED`) | No |
+| `read_wiki_page` tool | Yes (if `WIKI_ENABLED`) | No |
+| Most-recent transcript in prompt | Yes (verbatim) | No (doc takes its place) |
+| Doc text in prompt | — | Yes (whole doc, ≤150K chars) |
+| Post-session summary → `memory.md` | Yes (≥2 min sessions) | Yes (≥2 min sessions) |
+| Post-session analysis → vault | Yes (≥2 min sessions) | Yes (≥2 min sessions) |
+| Post-session recap artifact | No | Yes (Haiku → `artifacts/<id>.md`) |
+
+The shared shape — profile + memory + per-session context — is the same for both
+modes. Study mode just swaps the "context" piece from "wiki + most-recent
+transcript" to "a specific document."
+
 ## Study companion mode
 
-A document-grounded variant of the regular voice tutor.
+The document-grounded mode.
 
 - Open `http://localhost:7860/study/` (or the Tailscale URL with `/study/` appended on phone)
 - Upload a PDF / Markdown / plain-text doc (≤5MB, ≤150K characters of extracted text)
-- Pick the doc, click **Start session**, grant mic access, talk through it
-- Click **End session** when done; the WebRTC connection closes and the existing
-  on-disconnect pipeline runs (transcript save + summary + analysis)
-- A markdown recap is generated asynchronously by Haiku 4.5 and lands at
-  `~/.voice-tutor/artifacts/<session-id>.md`
+- Pick the doc, then click **Start session** on the next screen, grant mic access, talk through it
+- Click **End session** when done; the WebRTC connection closes and the standard
+  on-disconnect pipeline runs (transcript save → summary → memory append → analysis)
+- A markdown recap is also generated asynchronously by Haiku 4.5 and lands at
+  `~/.voice-tutor/artifacts/<session-id>.md` — this is study-mode only
 - The "Refresh" button on the ended view fetches `GET /api/sessions/<id>/artifact`
   and renders the markdown inline once it exists
-
-Study sessions skip `memory.md`, the most-recent transcript, and the wiki INDEX —
-the doc is the world for that session. `profile.md` still loads.
 
 Storage:
 - `~/.voice-tutor/documents/<uuid>-<original-filename>` — original upload
@@ -129,8 +150,6 @@ Storage:
 - `~/.voice-tutor/artifacts/<uuid>.md` — the recap
 - A separate `cost-log.jsonl` row with `kind: "artifact"` accounts for the
   artifact-generation Haiku call
-
-The regular `/client/` flow is untouched — same UI, same behavior, same prompt.
 
 ## Data
 

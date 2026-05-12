@@ -171,7 +171,7 @@ MEMORY_PATH = VOICE_TUTOR_DIR / "memory.md"
 COST_LOG_PATH = Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "cost-log.md"
 COST_LOG_JSONL_PATH = COST_LOG_PATH.with_suffix(".jsonl")
 SESSION_ANALYSIS_DIR = Path.home() / "second-brain" / "products" / "voice-tutor" / "session-analyses"
-MIN_ANALYSIS_DURATION_SEC = 300
+MIN_ANALYSIS_DURATION_SEC = 120
 MIN_SUMMARY_DURATION_SEC = 120
 
 ANALYSIS_PROMPT = """\
@@ -287,6 +287,17 @@ BREVITY_REMINDER = (
     "\n\n# Reminder\n\n"
     "Voice mode. One thought per turn. One to two sentences. "
     "Then stop and let the user respond. Never monologue."
+)
+
+# Appended after BREVITY_REMINDER in study mode. memory.md is ~2400 tokens of
+# open-chat session summaries; without recency-priming, that volume drowns out
+# the thin STUDY_BASE_INSTRUCTION at the top and the model drifts toward general
+# conversation. This reminder pulls the persona back at the last moment.
+STUDY_REMINDER = (
+    "\n\n# Study mode\n\n"
+    "You're a study companion for the document above. The memory section is "
+    "background — reference past topics only when they directly illuminate "
+    "the document. Stay focused on what's in front of you."
 )
 
 
@@ -469,9 +480,9 @@ def build_system_instruction(study: dict | None = None) -> str:
     """Assemble the system prompt.
 
     Regular mode: base + profile + wiki INDEX + memory + most-recent transcript.
-    Study mode (study={doc_title, doc_text}): base + profile + the doc itself.
-    Study mode skips memory, the most-recent transcript, the wiki INDEX, and the
-    wiki tagline — the doc is the world for that session.
+    Study mode (study={doc_title, doc_text}): base + profile + memory + the doc.
+    Study mode skips the most-recent transcript, the wiki INDEX, and the wiki
+    tagline — the doc replaces those as the session's focus.
     """
     profile = load_profile()
 
@@ -479,8 +490,15 @@ def build_system_instruction(study: dict | None = None) -> str:
         parts = [STUDY_BASE_INSTRUCTION]
         if profile:
             parts.append(f"\n## About the person you're talking to\n\n{profile}")
+        memory = load_memory()
+        if memory:
+            parts.append(
+                "\n# Background — Matt's prior topics (reference only if directly relevant to the document)\n\n"
+                + memory
+            )
         parts.append(f"\n## Document: {study['doc_title']}\n\n{study['doc_text']}")
         parts.append(BREVITY_REMINDER)
+        parts.append(STUDY_REMINDER)
         return "\n".join(parts)
 
     base = BASE_INSTRUCTION + (WIKI_TAGLINE if WIKI_ENABLED else "")
@@ -628,12 +646,7 @@ async def bot(runner_args):
         # (~$0.025/session) but unaccounted for vs the Anthropic dashboard.
         post_input = 0
         post_output = 0
-        # Study sessions are self-contained: the per-doc recap in
-        # ~/.voice-tutor/artifacts/ is their complete record. Skip the
-        # open-chat summary (which would pollute memory.md) and the vault
-        # session-analysis (which is shaped for the open-chat thread).
-        is_study = study_meta is not None
-        if not is_study and summary["session_duration_sec"] >= MIN_SUMMARY_DURATION_SEC:
+        if summary["session_duration_sec"] >= MIN_SUMMARY_DURATION_SEC:
             u = generate_session_summary(stem, transcript)
             if u:
                 post_input += u["input_tokens"]
@@ -642,7 +655,7 @@ async def bot(runner_args):
             if summary_path.exists():
                 append_to_memory(transcript, summary_path.read_text())
 
-        if not is_study and summary["session_duration_sec"] >= MIN_ANALYSIS_DURATION_SEC:
+        if summary["session_duration_sec"] >= MIN_ANALYSIS_DURATION_SEC:
             u = generate_session_analysis(stem, transcript, summary, usage.tool_calls)
             if u:
                 post_input += u["input_tokens"]
