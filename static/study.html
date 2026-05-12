@@ -69,6 +69,7 @@ let pc = null;
 let pcId = null;
 let sessionId = null;
 let connectedAt = null;  // ms timestamp when pc first reached 'connected'
+let localStream = null;  // mic stream from getUserMedia — stop tracks on session end
 
 const MIN_RECAP_DURATION_SEC = 5;
 const MAX_POLL_ATTEMPTS = 30;  // 30 ticks × 2s = 60s cap
@@ -137,12 +138,15 @@ $('backBtn').onclick = () => {
 async function connect() {
   pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
   pc.addTransceiver('audio', { direction: 'sendrecv' });
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  for (const t of stream.getTracks()) pc.addTrack(t, stream);
+  localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  for (const t of localStream.getTracks()) pc.addTrack(t, localStream);
   pc.ontrack = ev => { $('remoteAudio').srcObject = ev.streams[0]; };
   pc.onconnectionstatechange = () => {
     if (pc.connectionState === 'connected' && connectedAt === null) {
       connectedAt = Date.now();
+    }
+    if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      releaseMic();
     }
     const label = {
       'new': 'Connecting…',
@@ -188,8 +192,15 @@ async function connect() {
 
 let pollTimer = null;
 
+function releaseMic() {
+  if (!localStream) return;
+  for (const t of localStream.getTracks()) t.stop();
+  localStream = null;
+}
+
 $('endBtn').onclick = () => {
   if (pc) pc.close();
+  releaseMic();
   show('ended');
   $('artifactView').classList.add('hidden');
   const elapsedSec = connectedAt ? (Date.now() - connectedAt) / 1000 : 0;
