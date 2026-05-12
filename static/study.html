@@ -78,7 +78,7 @@ async function loadDocs() {
     const card = document.createElement('div');
     card.className = 'card';
     card.dataset.id = d.document_id;
-    card.innerHTML = `<strong>${escapeHtml(d.title)}</strong><br><span class="muted">${d.char_count.toLocaleString()} chars · ${d.uploaded_at.slice(0,16)}</span>`;
+    card.innerHTML = `<strong>${escapeHtml(d.title)}</strong><br><span class="muted">${d.char_count.toLocaleString()} chars · ${d.uploaded_at.slice(0,10)}</span>`;
     card.onclick = () => selectDoc(d.document_id, d.title, card);
     list.appendChild(card);
   }

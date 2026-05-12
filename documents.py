@@ -40,11 +40,25 @@ def _extract_text(filename: str, raw: bytes) -> str:
 
 
 def _derive_title(text: str, filename: str) -> str:
-    for line in text.splitlines():
-        line = line.strip().lstrip("#").strip()
-        if line:
-            return line[:120]
-    return filename
+    lines = text.splitlines()
+    start = 0
+    # Skip a YAML frontmatter block so we don't return its "---" delimiter.
+    if lines and lines[0].strip() == "---":
+        for j in range(1, len(lines)):
+            if lines[j].strip() == "---":
+                start = j + 1
+                break
+    # Prefer the first markdown H1 heading.
+    for line in lines[start:]:
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            return stripped.lstrip("#").strip()[:120]
+    # Fall back to the first non-empty line, then to the filename.
+    for line in lines[start:]:
+        stripped = line.strip().lstrip("#").strip()
+        if stripped:
+            return stripped[:120]
+    return Path(filename).stem
 
 
 def save_upload(filename: str, raw: bytes) -> dict:
@@ -86,9 +100,10 @@ def list_documents() -> list[dict]:
         text = txt_path.read_text()
         originals = [p for p in DOCUMENTS_DIR.glob(f"{doc_id}-*") if p != txt_path]
         original = originals[0] if originals else txt_path
+        display_name = original.name.removeprefix(f"{doc_id}-")
         docs.append({
             "document_id": doc_id,
-            "title": _derive_title(text, original.name),
+            "title": _derive_title(text, display_name),
             "char_count": len(text),
             "uploaded_at": datetime.fromtimestamp(original.stat().st_mtime).isoformat(),
         })
@@ -103,5 +118,5 @@ def load_document(doc_id: str) -> tuple[str, str] | None:
         return None
     text = txt_path.read_text()
     originals = [p for p in DOCUMENTS_DIR.glob(f"{doc_id}-*") if p != txt_path]
-    original_name = originals[0].name if originals else f"{doc_id}.txt"
+    original_name = originals[0].name.removeprefix(f"{doc_id}-") if originals else f"{doc_id}.txt"
     return _derive_title(text, original_name), text
