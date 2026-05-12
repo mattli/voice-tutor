@@ -68,6 +68,10 @@ let selectedDocTitle = null;
 let pc = null;
 let pcId = null;
 let sessionId = null;
+let connectedAt = null;  // ms timestamp when pc first reached 'connected'
+
+const MIN_RECAP_DURATION_SEC = 5;
+const MAX_POLL_ATTEMPTS = 30;  // 30 ticks × 2s = 60s cap
 
 async function loadDocs() {
   const docs = await fetch('/api/documents').then(r => r.json());
@@ -127,6 +131,9 @@ async function connect() {
   for (const t of stream.getTracks()) pc.addTrack(t, stream);
   pc.ontrack = ev => { $('remoteAudio').srcObject = ev.streams[0]; };
   pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'connected' && connectedAt === null) {
+      connectedAt = Date.now();
+    }
     const label = {
       'new': 'Connecting…',
       'connecting': 'Connecting…',
@@ -174,25 +181,39 @@ let pollTimer = null;
 $('endBtn').onclick = () => {
   if (pc) pc.close();
   show('ended');
-  $('endedStatus').textContent = 'Generating recap…';
   $('artifactView').classList.add('hidden');
+  const elapsedSec = connectedAt ? (Date.now() - connectedAt) / 1000 : 0;
+  if (elapsedSec < MIN_RECAP_DURATION_SEC) {
+    $('endedStatus').textContent = 'Session ended — too short for a recap.';
+    return;
+  }
+  $('endedStatus').textContent = 'Generating recap…';
   pollArtifact();
 };
 
 async function pollArtifact() {
   if (pollTimer) clearInterval(pollTimer);
   const target = sessionId;
+  let attempts = 0;
   const tick = async () => {
     if (target !== sessionId) return;  // user moved on
+    attempts++;
     const r = await fetch(`/api/sessions/${target}/artifact`);
-    if (!r.ok) return;
-    clearInterval(pollTimer);
-    pollTimer = null;
-    const md = await r.text();
-    const view = $('artifactView');
-    view.innerHTML = window.marked ? marked.parse(md) : md;
-    view.classList.remove('hidden');
-    $('endedStatus').textContent = 'Recap ready.';
+    if (r.ok) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+      const md = await r.text();
+      const view = $('artifactView');
+      view.innerHTML = window.marked ? marked.parse(md) : md;
+      view.classList.remove('hidden');
+      $('endedStatus').textContent = 'Recap ready.';
+      return;
+    }
+    if (attempts >= MAX_POLL_ATTEMPTS) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+      $('endedStatus').textContent = 'Recap didn’t generate within 60s — check server logs.';
+    }
   };
   tick();
   pollTimer = setInterval(tick, 2000);
@@ -203,6 +224,7 @@ $('newBtn').onclick = () => {
   selectedDocId = null;
   selectedDocTitle = null;
   sessionId = null;
+  connectedAt = null;
   $('startBtn').disabled = true;
   $('artifactView').classList.add('hidden');
   document.querySelectorAll('.card.selected').forEach(c => c.classList.remove('selected'));
