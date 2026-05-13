@@ -229,6 +229,25 @@
   .upload-status.is-error { color: #8a3a3a; font-style: normal; font-family: var(--sans); }
   .hidden-file { display: none; }
 
+  .last-session-row {
+    margin-top: 28px;
+    padding-top: 18px;
+    border-top: 1px solid var(--rule);
+    text-align: center;
+  }
+  .last-session-link {
+    background: transparent;
+    border: 0;
+    padding: 6px 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .last-session-link:hover { color: var(--accent); }
+
   /* ============ BUTTONS ============ */
   .btn {
     font-family: var(--sans);
@@ -394,31 +413,35 @@
     gap: 8px;
   }
 
-  /* ============ RECAP GENERATING ============ */
-  .recap-loading {
-    margin: 72px 0;
+  /* ============ RECAP LOADING ============ */
+  /* Lives inside recap-ready (above diagnostics) so the diagnostics panel
+     fills in beneath while the recap artifact is still generating. Visual
+     mirrors the original design's centered loading state. */
+  .recap-inline-loading {
+    margin: 48px 0 24px;
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 18px;
+    padding: 24px 0;
   }
-  .recap-loading__dots {
+  .recap-inline-loading__dots {
     display: flex;
     gap: 6px;
   }
-  .recap-loading__dots span {
+  .recap-inline-loading__dots span {
     width: 5px; height: 5px; border-radius: 50%;
     background: var(--ink-2);
     opacity: 0.25;
     animation: typing 1400ms ease-in-out infinite;
   }
-  .recap-loading__dots span:nth-child(2) { animation-delay: 180ms; }
-  .recap-loading__dots span:nth-child(3) { animation-delay: 360ms; }
+  .recap-inline-loading__dots span:nth-child(2) { animation-delay: 180ms; }
+  .recap-inline-loading__dots span:nth-child(3) { animation-delay: 360ms; }
   @keyframes typing {
     0%, 80%, 100% { opacity: 0.2; transform: translateY(0); }
     40%           { opacity: 0.85; transform: translateY(-2px); }
   }
-  .recap-loading__label {
+  .recap-inline-loading__label {
     font-family: var(--serif);
     font-style: italic;
     color: var(--muted);
@@ -504,6 +527,111 @@
     font-size: 17px;
   }
 
+  /* ============ DIAGNOSTICS ============ */
+  /* A deliberately different register from the recap above: tinted background,
+     monospace eyebrows, and tabular numbers. The recap is the product surface;
+     this is the system surface. */
+  .diagnostics {
+    margin-top: 56px;
+    padding: 26px 22px 28px;
+    background: var(--paper-2);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+  }
+  .diagnostics__title {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 22px;
+  }
+  .diag-section { margin-bottom: 26px; }
+  .diag-section:last-of-type { margin-bottom: 0; }
+  .diag-section__label {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    margin: 0 0 10px;
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+  .diag-section__link {
+    margin-left: auto;
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: 0.02em;
+    text-transform: none;
+    color: var(--muted);
+    text-decoration: none;
+  }
+  .diag-section__link:hover { color: var(--accent); }
+
+  .cost-summary {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 14px;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+    margin: 0 0 10px;
+  }
+  .cost-grid {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    color: var(--ink-2);
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 4px 14px;
+    line-height: 1.5;
+  }
+  .cost-grid__k { color: var(--muted); }
+  .cost-grid__v { font-variant-numeric: tabular-nums; }
+
+  .memory-append-body {
+    font-family: var(--serif);
+    font-size: 15px;
+    line-height: 1.6;
+    color: var(--ink-2);
+    background: var(--paper);
+    border-left: 2px solid var(--rule-2);
+    padding: 12px 16px;
+    border-radius: 0 4px 4px 0;
+  }
+  .memory-append-body > *:first-child { margin-top: 0; }
+  .memory-append-body > *:last-child { margin-bottom: 0; }
+  .memory-append-body p { margin: 0 0 8px; }
+  .memory-append-body ul, .memory-append-body ol { padding-left: 20px; margin: 0 0 8px; }
+  .memory-append-body li { margin-bottom: 4px; }
+  .memory-append-body strong { font-weight: 600; color: var(--ink); }
+
+  .diagnostics__persistent {
+    margin-top: 28px;
+    padding-top: 18px;
+    border-top: 1px solid var(--rule);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    align-items: baseline;
+  }
+  .diagnostics__persistent-label {
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-size: 10px;
+  }
+  .diagnostics__persistent a {
+    color: var(--ink-2);
+    text-decoration: none;
+  }
+  .diagnostics__persistent a:hover { color: var(--accent); text-decoration: underline; }
+
   @media (min-width: 600px) {
     .app { padding: 60px 32px 120px; }
     .session__doc-title { font-size: 38px; }
@@ -547,6 +675,10 @@
       <input type="file" class="hidden-file" id="file-input" accept=".pdf,.md,.markdown,.txt">
       <p class="upload-status" id="upload-status"></p>
     </div>
+
+    <div class="last-session-row">
+      <button class="last-session-link" id="view-last-session" type="button">View last session →</button>
+    </div>
   </section>
 
   <section class="screen" id="screen-session">
@@ -579,16 +711,55 @@
 
   <section class="screen" id="screen-ended">
 
-    <div id="recap-generating">
-      <div class="recap-loading" role="status" aria-live="polite">
-        <div class="recap-loading__dots" aria-hidden="true"><span></span><span></span><span></span></div>
-        <div class="recap-loading__label" id="recap-loading-label">Generating recap…</div>
+    <div id="recap-ready">
+      <div class="recap-inline-loading" id="recap-inline-loading" role="status" aria-live="polite">
+        <div class="recap-inline-loading__dots" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div class="recap-inline-loading__label" id="recap-inline-loading-label">Generating recap…</div>
       </div>
-    </div>
-
-    <div id="recap-ready" style="display:none;">
-      <article class="md" id="recap-body"></article>
+      <article class="md" id="recap-body" style="display:none;"></article>
       <div class="recap__short" id="recap-short" style="display:none;"></div>
+
+      <section class="diagnostics" id="diagnostics" style="display:none;">
+        <p class="diagnostics__title">Diagnostics</p>
+
+        <div class="diag-section" id="diag-cost" style="display:none;">
+          <p class="diag-section__label">
+            Cost
+            <a class="diag-section__link js-context-link" data-base="/view/cost-log" href="/view/cost-log">View cost-log.md →</a>
+          </p>
+          <p class="cost-summary" id="cost-summary"></p>
+          <div class="cost-grid" id="cost-grid"></div>
+        </div>
+
+        <div class="diag-section" id="diag-memory" style="display:none;">
+          <p class="diag-section__label">
+            Memory append
+            <a class="diag-section__link js-context-link" data-base="/view/memory" href="/view/memory">View full memory.md →</a>
+          </p>
+          <div class="memory-append-body" id="memory-append-body"></div>
+        </div>
+
+        <div class="diag-section" id="diag-analysis" style="display:none;">
+          <p class="diag-section__label">
+            Session analysis
+            <a class="diag-section__link" id="analysis-link" href="">View analysis →</a>
+          </p>
+        </div>
+
+        <div class="diag-section" id="diag-prompt" style="display:none;">
+          <p class="diag-section__label">
+            System prompt
+            <a class="diag-section__link" id="prompt-link" href="">View prompt →</a>
+          </p>
+        </div>
+
+        <div class="diagnostics__persistent">
+          <span class="diagnostics__persistent-label">Persistent state:</span>
+          <a class="js-context-link" data-base="/view/memory" href="/view/memory">memory.md</a>
+          <a class="js-context-link" data-base="/view/profile" href="/view/profile">profile.md</a>
+          <a class="js-context-link" data-base="/view/cost-log" href="/view/cost-log">cost-log.md</a>
+        </div>
+      </section>
 
       <div class="recap__footer">
         <button class="btn btn--primary" id="new-session" type="button">Start another session</button>
@@ -602,6 +773,7 @@
 <script>
   // ─── constants ─────────────────────────────────────
   const MIN_RECAP_DURATION_SEC = 5;
+  const DEFAULT_MIN_FULL_TELEMETRY_SEC = 120;  // overridden per-response from server
   const MAX_POLL_ATTEMPTS = 30;  // 30 × 2s = 60s
 
   // ─── DOM refs ──────────────────────────────────────
@@ -617,7 +789,8 @@
   const listeningLabel = $('listening-label');
   const recapBody = $('recap-body');
   const recapShort = $('recap-short');
-  const recapLoadingLabel = $('recap-loading-label');
+  const recapInlineLoading = $('recap-inline-loading');
+  const recapInlineLoadingLabel = $('recap-inline-loading-label');
 
   // ─── state ─────────────────────────────────────────
   let docs = [];
@@ -645,7 +818,6 @@
       'picker':           'screen-picker',
       'session-idle':     'screen-session',
       'session-active':   'screen-session',
-      'recap-generating': 'screen-ended',
       'recap-ready':      'screen-ended',
     };
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('is-active'));
@@ -654,13 +826,12 @@
 
     $('session-idle').style.display       = (name === 'session-idle')     ? '' : 'none';
     $('session-active').style.display     = (name === 'session-active')   ? '' : 'none';
-    $('recap-generating').style.display   = (name === 'recap-generating') ? '' : 'none';
-    $('recap-ready').style.display        = (name === 'recap-ready')      ? '' : 'none';
 
     if (name !== 'session-active' && elapsedTimer) {
       clearInterval(elapsedTimer); elapsedTimer = null;
     }
-    if (name !== 'recap-generating' && pollTimer) {
+    // Polling lives in recap-ready (diagnostics fill in alongside recap loading).
+    if (name !== 'recap-ready' && pollTimer) {
       clearInterval(pollTimer); pollTimer = null;
     }
     if (name === 'session-active') {
@@ -669,7 +840,21 @@
       elapsedTimer = setInterval(updateElapsed, 1000);
     }
 
+    syncURLState(name);
     window.scrollTo(0, 0);
+  }
+
+  // Stamp the URL with ?session=<id> in recap-ready so the browser back button
+  // from a viewer page (memory.md, prompt, etc.) restores the post-session
+  // view instead of dumping the user back at the picker.
+  function syncURLState(name) {
+    const target = (name === 'recap-ready' && sessionId)
+      ? `/study/?session=${encodeURIComponent(sessionId)}`
+      : '/study/';
+    const current = location.pathname + location.search;
+    if (current !== target) {
+      history.replaceState(null, '', target);
+    }
   }
 
   function updateElapsed() {
@@ -832,26 +1017,57 @@
     releaseMic();
   }
 
+  let elapsedAtEndSec = 0;
+
   $('end-session').addEventListener('click', () => {
-    const elapsedSec = connectedAt ? Math.floor((Date.now() - connectedAt) / 1000) : 0;
+    elapsedAtEndSec = connectedAt ? Math.floor((Date.now() - connectedAt) / 1000) : 0;
     teardownConnection();
-    if (elapsedSec < MIN_RECAP_DURATION_SEC) {
-      renderRecapShort('Session ended — too short for a recap.', elapsedSec);
+    resetDiagnostics();
+    if (elapsedAtEndSec < MIN_RECAP_DURATION_SEC) {
+      renderRecapShort('Session ended — too short for a recap.', elapsedAtEndSec);
       return;
     }
-    recapLoadingLabel.textContent = 'Generating recap…';
-    showState('recap-generating');
+    // Go straight to recap-ready: recap-body stays hidden behind an inline
+    // "Generating recap…" placeholder while diagnostics fill in beside it.
+    recapInlineLoading.style.display = '';
+    recapInlineLoadingLabel.textContent = 'Generating recap…';
+    recapBody.style.display = 'none';
+    recapShort.style.display = 'none';
+    showState('recap-ready');
     startPolling();
   });
 
   function renderRecapShort(message, elapsedSec) {
+    recapInlineLoading.style.display = 'none';
     recapBody.style.display = 'none';
     recapShort.style.display = '';
     recapShort.textContent = `${message} (${fmtTime(elapsedSec)})`;
+    $('diagnostics').style.display = 'none';
     showState('recap-ready');
   }
 
-  // ─── artifact polling ──────────────────────────────
+  function resetDiagnostics() {
+    $('diagnostics').style.display = 'none';
+    ['diag-cost', 'diag-memory', 'diag-analysis', 'diag-prompt'].forEach(id => {
+      $(id).style.display = 'none';
+    });
+    recapInlineLoading.style.display = 'none';
+    updateContextLinks();
+  }
+
+  // Update cross-session viewer links so their "← Back to study" link in the
+  // viewer page returns to /study/?session=<id> instead of the picker. The
+  // per-session links (analysis, prompt) already encode the session in their
+  // path; this only touches the doc-agnostic links (memory.md, profile.md,
+  // cost-log.md, and the cost-section link).
+  function updateContextLinks() {
+    document.querySelectorAll('.js-context-link').forEach(a => {
+      const base = a.dataset.base;
+      a.href = sessionId ? `${base}?from=${encodeURIComponent(sessionId)}` : base;
+    });
+  }
+
+  // ─── telemetry polling ─────────────────────────────
   function startPolling() {
     if (pollTimer) clearInterval(pollTimer);
     pollAttempts = 0;
@@ -860,28 +1076,81 @@
       if (target !== sessionId) return;
       pollAttempts++;
       try {
-        const r = await fetch(`/api/sessions/${target}/artifact`);
+        const r = await fetch(`/api/sessions/${target}/telemetry`);
         if (r.ok) {
-          clearInterval(pollTimer); pollTimer = null;
-          const md = await r.text();
-          renderRecap(md);
-          return;
+          const data = await r.json();
+          renderTelemetry(data, target);
+          const minSec = data.min_summary_sec || DEFAULT_MIN_FULL_TELEMETRY_SEC;
+          const expectsSummary = elapsedAtEndSec >= minSec;
+          const done = data.recap && data.cost && data.has_prompt
+            && (!expectsSummary || (data.memory_append && data.analysis));
+          if (done) {
+            clearInterval(pollTimer); pollTimer = null;
+            return;
+          }
         }
       } catch {}
       if (pollAttempts >= MAX_POLL_ATTEMPTS) {
         clearInterval(pollTimer); pollTimer = null;
-        recapLoadingLabel.textContent = 'Recap didn’t generate within 60s — check server logs.';
+        // If the recap never landed, surface a soft error in the inline loader.
+        // Otherwise stay quiet — diagnostics may have been skipped server-side
+        // and the user can already see which ones did and didn't appear.
+        if (recapBody.style.display === 'none' && recapShort.style.display === 'none') {
+          recapInlineLoadingLabel.textContent = 'Recap didn’t generate within 60s — check server logs.';
+        }
       }
     };
     tick();
     pollTimer = setInterval(tick, 2000);
   }
 
-  function renderRecap(md) {
-    recapBody.innerHTML = window.marked ? marked.parse(md) : escapeHtml(md);
-    recapBody.style.display = '';
-    recapShort.style.display = 'none';
-    showState('recap-ready');
+  function renderTelemetry(data, sid) {
+    if (data.recap && recapBody.style.display === 'none') {
+      recapBody.innerHTML = window.marked ? marked.parse(data.recap) : escapeHtml(data.recap);
+      recapBody.style.display = '';
+      recapInlineLoading.style.display = 'none';
+      recapShort.style.display = 'none';
+    }
+    const anyDiagnostic = data.cost || data.memory_append || data.analysis || data.has_prompt;
+    if (anyDiagnostic) {
+      $('diagnostics').style.display = '';
+      updateContextLinks();
+    }
+
+    if (data.cost && $('diag-cost').style.display === 'none') renderCost(data.cost);
+    if (data.memory_append && $('diag-memory').style.display === 'none') renderMemoryAppend(data.memory_append);
+    if (data.analysis && $('diag-analysis').style.display === 'none') {
+      $('analysis-link').href = `/view/sessions/${sid}/analysis`;
+      $('diag-analysis').style.display = '';
+    }
+    if (data.has_prompt && $('diag-prompt').style.display === 'none') {
+      $('prompt-link').href = `/view/sessions/${sid}/prompt`;
+      $('diag-prompt').style.display = '';
+    }
+  }
+
+  function fmtUSD(n) { return `$${(n ?? 0).toFixed(3)}`; }
+  function fmtInt(n) { return (n ?? 0).toLocaleString(); }
+
+  function renderCost(cost) {
+    const mins = (cost.session_duration_sec / 60).toFixed(1);
+    const total = fmtUSD(cost.total_cost_usd);
+    $('cost-summary').textContent = `${mins} min · ${total}`;
+    const rows = [
+      ['LLM (live)', fmtUSD(cost.llm.cost_usd), `${fmtInt(cost.llm.uncached_input_tokens)} in · ${fmtInt(cost.llm.cache_read_tokens)} cached · ${fmtInt(cost.llm.output_tokens)} out`],
+      ['STT', fmtUSD(cost.stt.cost_usd), `${cost.stt.minutes.toFixed(2)} min Deepgram`],
+      ['TTS', fmtUSD(cost.tts.cost_usd), `${fmtInt(cost.tts.chars)} chars Cartesia`],
+      ['Post-session', fmtUSD(cost.post_session.cost_usd), `${fmtInt(cost.post_session.input_tokens + cost.post_session.output_tokens)} Haiku tokens`],
+    ];
+    $('cost-grid').innerHTML = rows.map(([k, v, sub]) =>
+      `<span class="cost-grid__k">${escapeHtml(k)}</span><span class="cost-grid__v">${escapeHtml(v)} <span style="opacity:0.55">· ${escapeHtml(sub)}</span></span>`
+    ).join('');
+    $('diag-cost').style.display = '';
+  }
+
+  function renderMemoryAppend(md) {
+    $('memory-append-body').innerHTML = window.marked ? marked.parse(md) : escapeHtml(md);
+    $('diag-memory').style.display = '';
   }
 
   // ─── nav: header back & new session ────────────────
@@ -891,6 +1160,7 @@
     sessionId = null;
     connectedAt = null;
     sessionStartMs = null;
+    resetDiagnostics();
     showState('picker');
     loadDocs();
   });
@@ -901,11 +1171,103 @@
     connectedAt = null;
     sessionStartMs = null;
     listeningLabel.textContent = 'Connecting…';
+    resetDiagnostics();
     showState('session-idle');
   });
 
+  // ─── scroll position preserved across viewer navigation ──
+  // When the user clicks "View …" to navigate to a viewer page, save the
+  // current scroll position keyed by sessionId. On return (page loads with
+  // ?session=<id>), restore it so the user lands where they were instead of
+  // at the top of the page.
+  function scrollKey(sid) { return `vt:scroll:${sid}`; }
+
+  document.addEventListener('click', e => {
+    const a = e.target.closest('a[href^="/view/"]');
+    if (a && sessionId) {
+      sessionStorage.setItem(scrollKey(sessionId), String(window.scrollY));
+    }
+  }, true);
+
+  function restoreScroll(sid) {
+    const raw = sessionStorage.getItem(scrollKey(sid));
+    if (raw === null) return;
+    const y = parseInt(raw, 10);
+    if (!Number.isFinite(y)) return;
+    // Wait two frames so the markdown rendering and layout settle before we
+    // scroll — otherwise scrollTo can clamp short.
+    requestAnimationFrame(() => requestAnimationFrame(() => window.scrollTo(0, y)));
+  }
+
+  // ─── load a past session into recap-ready (no polling) ─
+  async function loadSessionView(sid) {
+    let data;
+    try {
+      const r = await fetch(`/api/sessions/${sid}/telemetry`);
+      if (!r.ok) return false;
+      data = await r.json();
+    } catch {
+      return false;
+    }
+    if (!docs.length) await loadDocs();
+    currentDoc = (data.document_id && docs.find(d => d.document_id === data.document_id)) || {
+      document_id: data.document_id,
+      title: data.document_title || 'Unknown document',
+      char_count: 0,
+      uploaded_at: '',
+    };
+    sessionId = sid;
+    connectedAt = null;
+    elapsedAtEndSec = 0;
+    resetDiagnostics();
+    recapInlineLoading.style.display = 'none';
+    recapBody.style.display = 'none';
+    recapShort.style.display = 'none';
+    showState('recap-ready');
+    renderTelemetry(data, sid);
+    if (!data.recap) {
+      recapShort.style.display = '';
+      recapShort.textContent = 'Recap not available for this session.';
+    }
+    return true;
+  }
+
+  $('view-last-session').addEventListener('click', async () => {
+    const status = $('upload-status');
+    status.classList.remove('is-error');
+    status.textContent = '';
+    let latest;
+    try {
+      const r = await fetch('/api/sessions/latest');
+      if (!r.ok) {
+        status.classList.add('is-error');
+        status.textContent = r.status === 404 ? 'No past sessions yet.' : `Couldn’t load last session (${r.status}).`;
+        return;
+      }
+      latest = await r.json();
+    } catch (e) {
+      status.classList.add('is-error');
+      status.textContent = `Couldn’t load last session: ${e.message || e}`;
+      return;
+    }
+    await loadSessionView(latest.session_id);
+  });
+
   // ─── boot ──────────────────────────────────────────
-  loadDocs();
+  // If the URL has ?session=<id>, restore the recap-ready view for that
+  // session (browser back from a viewer page lands here). Otherwise show
+  // the picker normally.
+  (async () => {
+    const params = new URLSearchParams(location.search);
+    const urlSession = params.get('session');
+    if (urlSession) {
+      const ok = await loadSessionView(urlSession);
+      if (ok) { restoreScroll(urlSession); return; }
+      // Session in URL didn't resolve — clean up and fall through to picker.
+      history.replaceState(null, '', '/study/');
+    }
+    loadDocs();
+  })();
 </script>
 
 </body>

@@ -171,8 +171,14 @@ MEMORY_PATH = VOICE_TUTOR_DIR / "memory.md"
 COST_LOG_PATH = Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "cost-log.md"
 COST_LOG_JSONL_PATH = COST_LOG_PATH.with_suffix(".jsonl")
 SESSION_ANALYSIS_DIR = Path.home() / "second-brain" / "products" / "voice-tutor" / "session-analyses"
-MIN_ANALYSIS_DURATION_SEC = 120
-MIN_SUMMARY_DURATION_SEC = 120
+# Lower bound (in seconds) before we spend Haiku tokens on a session summary or
+# analysis. 120 is the production default — shorter sessions tend to produce
+# thin summaries that pollute memory.md. Set VOICE_TUTOR_MIN_TELEMETRY_SEC in
+# .env to override both thresholds together (useful for demos where you want
+# the full diagnostics panel to populate from a ~1-min session).
+_min_telemetry_override = os.getenv("VOICE_TUTOR_MIN_TELEMETRY_SEC")
+MIN_ANALYSIS_DURATION_SEC = int(_min_telemetry_override) if _min_telemetry_override else 120
+MIN_SUMMARY_DURATION_SEC = int(_min_telemetry_override) if _min_telemetry_override else 120
 
 ANALYSIS_PROMPT = """\
 Analyze this voice conversation session transcript. Produce a structured markdown \
@@ -557,6 +563,10 @@ async def bot(runner_args):
         study={"doc_title": study_meta["doc_title"], "doc_text": study_meta["doc_text"]}
         if study_meta else None
     )
+
+    if study_meta:
+        TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+        (TRANSCRIPTS_DIR / f"{study_meta['session_id']}.prompt.txt").write_text(system_instruction)
 
     llm = AnthropicLLMService(
         api_key=os.getenv("ANTHROPIC_API_KEY"),
