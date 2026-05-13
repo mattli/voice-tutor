@@ -146,7 +146,7 @@ async def upload_document(file: UploadFile):
 
 @app.get("/api/documents")
 async def list_documents_route():
-    return documents.list_documents()
+    return await documents.list_documents()
 
 
 STUDY_HTML = Path(__file__).parent / "static" / "study.html"

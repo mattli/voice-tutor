@@ -1,257 +1,911 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Voice Tutor — Study</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;0,8..60,700;1,8..60,400;1,8..60,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
-  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
-  .muted { color: #666; }
-  .card { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; cursor: pointer; }
-  .card:hover { border-color: #2a6df4; }
-  button { font-size: 1rem; padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid #2a6df4; background: #2a6df4; color: #fff; cursor: pointer; }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-  button.secondary { background: #fff; color: #2a6df4; }
-  .hidden { display: none; }
-  pre { white-space: pre-wrap; background: #f5f5f5; padding: 1rem; border-radius: 6px; }
-  .row { display: flex; gap: 0.75rem; align-items: center; margin: 0.75rem 0; }
-  #artifactView { background: #f5f5f5; padding: 1rem; border-radius: 6px; }
-  #artifactView h1, #artifactView h2, #artifactView h3 { margin-top: 1rem; }
-  #artifactView :first-child { margin-top: 0; }
+  :root {
+    --paper:      #faf7f0;
+    --paper-2:    #f3eee0;
+    --ink:        #1c1a17;
+    --ink-2:      #44403a;
+    --muted:      #8a8478;
+    --rule:       #e6dfcc;
+    --rule-2:     #d6cdb5;
+    --card:       #fffdf7;
+    --accent:     #2d4a6b;
+    --accent-ink: #1e3754;
+    --accent-soft:#e7ecf2;
+    --serif: "Source Serif 4", "Source Serif Pro", "Charter", "Iowan Old Style", Georgia, serif;
+    --sans:  "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    --radius: 10px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(circle at 18% 22%, rgba(160, 130, 60, 0.045), transparent 45%),
+      radial-gradient(circle at 82% 78%, rgba(160, 130, 60, 0.03),  transparent 45%);
+    z-index: -1;
+  }
+
+  ::selection { background: rgba(45, 74, 107, 0.18); }
+
+  .app {
+    max-width: 560px;
+    margin: 0 auto;
+    padding: 28px 22px 96px;
+    min-height: 100vh;
+  }
+
+  /* ============ HEADER ============ */
+  .wordmark {
+    padding-bottom: 22px;
+    border-bottom: 1px solid var(--rule);
+    margin-bottom: 36px;
+  }
+  .wordmark__row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .wordmark__name {
+    font-family: var(--serif);
+    font-size: 21px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+    margin: 0;
+  }
+  .wordmark__sub {
+    font-family: var(--serif);
+    font-size: 14px;
+    font-style: italic;
+    color: var(--muted);
+    font-weight: 400;
+    letter-spacing: 0.005em;
+  }
+  .wordmark__back {
+    font-family: var(--sans);
+    font-size: 13px;
+    color: var(--muted);
+    background: transparent;
+    border: 0;
+    padding: 0 0 8px;
+    margin: -4px 0 0 -2px;
+    cursor: pointer;
+    line-height: 1;
+    letter-spacing: 0.005em;
+    transition: color 150ms ease;
+    display: none;
+    min-height: 32px;
+    text-align: left;
+  }
+  .wordmark__back:hover, .wordmark__back:focus-visible {
+    color: var(--ink);
+    outline: none;
+  }
+  .wordmark[data-context="session-idle"]     .wordmark__back,
+  .wordmark[data-context="session-active"]   .wordmark__back,
+  .wordmark[data-context="recap-generating"] .wordmark__back,
+  .wordmark[data-context="recap-ready"]      .wordmark__back { display: block; }
+
+  /* ============ SCREENS ============ */
+  .screen { display: none; }
+  .screen.is-active { display: block; }
+
+  /* ============ PICKER ============ */
+  .lead {
+    font-family: var(--serif);
+    font-size: 26px;
+    line-height: 1.22;
+    font-weight: 500;
+    color: var(--ink);
+    margin: 0 0 10px;
+    letter-spacing: -0.012em;
+  }
+  .sub {
+    color: var(--ink-2);
+    font-size: 15px;
+    margin: 0 0 30px;
+    max-width: 38ch;
+    text-wrap: pretty;
+  }
+
+  .section-label {
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 28px 0 12px;
+  }
+
+  .doc-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .doc {
+    background: var(--card);
+    padding: 16px 18px;
+    cursor: pointer;
+    border: 0;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    transition: background-color 150ms ease;
+  }
+  .doc:hover, .doc:focus-visible { background: var(--paper-2); outline: none; }
+  .doc:active { background: var(--paper-2); }
+
+  .doc__body { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .doc__title {
+    font-family: var(--serif);
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--ink);
+    letter-spacing: -0.005em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .doc__meta {
+    font-size: 13px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .doc__sep { margin: 0 6px; opacity: 0.5; }
+  .doc__chev {
+    color: var(--muted);
+    flex-shrink: 0;
+    transition: transform 150ms ease, color 150ms ease;
+  }
+  .doc:hover .doc__chev { color: var(--ink-2); transform: translateX(2px); }
+
+  .empty, .loading {
+    background: var(--card);
+    border: 1px dashed var(--rule-2);
+    border-radius: var(--radius);
+    padding: 36px 18px;
+    text-align: center;
+  }
+  .empty__title, .loading__title {
+    font-family: var(--serif);
+    font-style: italic;
+    color: var(--muted);
+    margin: 0 0 4px;
+    font-size: 16px;
+  }
+  .empty__sub {
+    color: var(--muted);
+    font-size: 13px;
+    margin: 0;
+  }
+
+  .upload-row {
+    margin-top: 22px;
+  }
+  .upload-status {
+    margin: 10px 0 0;
+    font-size: 13px;
+    color: var(--muted);
+    font-style: italic;
+    font-family: var(--serif);
+    min-height: 18px;
+  }
+  .upload-status.is-error { color: #8a3a3a; font-style: normal; font-family: var(--sans); }
+  .hidden-file { display: none; }
+
+  /* ============ BUTTONS ============ */
+  .btn {
+    font-family: var(--sans);
+    font-size: 15px;
+    font-weight: 500;
+    padding: 12px 20px;
+    min-height: 44px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    letter-spacing: 0.005em;
+  }
+  .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+  .btn--primary {
+    background: var(--accent);
+    color: #fbf8f0;
+    border-color: var(--accent);
+  }
+  .btn--primary:hover:not(:disabled), .btn--primary:focus-visible {
+    background: var(--accent-ink);
+    border-color: var(--accent-ink);
+    outline: none;
+  }
+  .btn--secondary {
+    background: transparent;
+    color: var(--ink-2);
+    border-color: var(--rule-2);
+  }
+  .btn--secondary:hover:not(:disabled), .btn--secondary:focus-visible {
+    background: var(--paper-2);
+    border-color: var(--ink-2);
+    color: var(--ink);
+    outline: none;
+  }
+  .btn--neutral {
+    background: var(--card);
+    color: var(--ink-2);
+    border-color: var(--rule-2);
+  }
+  .btn--neutral:hover:not(:disabled), .btn--neutral:focus-visible {
+    border-color: var(--ink-2);
+    color: var(--ink);
+    outline: none;
+  }
+  .btn--block { width: 100%; padding: 15px 20px; }
+
+  /* ============ SESSION ============ */
+  .session__ctx-label {
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 4px 0 10px;
+  }
+  .session__doc-title {
+    font-family: var(--serif);
+    font-size: 34px;
+    line-height: 1.1;
+    font-weight: 500;
+    color: var(--ink);
+    margin: 0 0 8px;
+    letter-spacing: -0.018em;
+    text-wrap: balance;
+  }
+  .session__doc-meta {
+    font-size: 13px;
+    color: var(--muted);
+    margin: 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .session__summary {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--ink-2);
+    margin: 22px 0 0;
+    text-wrap: pretty;
+  }
+
+  .session__divider {
+    height: 1px;
+    background: var(--rule);
+    margin: 36px 0 32px;
+  }
+
+  .session__cta {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .session__hint {
+    text-align: center;
+    font-size: 13px;
+    color: var(--muted);
+    font-style: italic;
+    font-family: var(--serif);
+    margin: 18px 0 0;
+  }
+
+  /* ---- ACTIVE listening ---- */
+  .listening {
+    margin: 48px 0 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 22px;
+    padding: 32px 0;
+  }
+  .listening__dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    position: relative;
+    box-shadow: 0 0 0 0 rgba(45, 74, 107, 0.35);
+    animation: pulse 2400ms ease-in-out infinite;
+  }
+  .listening__dot::after {
+    content: "";
+    position: absolute;
+    inset: -6px;
+    border-radius: 50%;
+    border: 1px solid rgba(45, 74, 107, 0.18);
+    animation: halo 2400ms ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1);    box-shadow: 0 0 0 0  rgba(45, 74, 107, 0.30); }
+    50%      { transform: scale(1.05); box-shadow: 0 0 0 10px rgba(45, 74, 107, 0); }
+  }
+  @keyframes halo {
+    0%, 100% { transform: scale(1);   opacity: 0.6; }
+    50%      { transform: scale(1.6); opacity: 0;   }
+  }
+  .listening__label {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 19px;
+    color: var(--ink-2);
+    letter-spacing: 0.005em;
+  }
+  .listening__elapsed {
+    font-family: var(--sans);
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+  }
+
+  .session__active-actions {
+    margin-top: 36px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* ============ RECAP GENERATING ============ */
+  .recap-loading {
+    margin: 72px 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+  }
+  .recap-loading__dots {
+    display: flex;
+    gap: 6px;
+  }
+  .recap-loading__dots span {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--ink-2);
+    opacity: 0.25;
+    animation: typing 1400ms ease-in-out infinite;
+  }
+  .recap-loading__dots span:nth-child(2) { animation-delay: 180ms; }
+  .recap-loading__dots span:nth-child(3) { animation-delay: 360ms; }
+  @keyframes typing {
+    0%, 80%, 100% { opacity: 0.2; transform: translateY(0); }
+    40%           { opacity: 0.85; transform: translateY(-2px); }
+  }
+  .recap-loading__label {
+    font-family: var(--serif);
+    font-style: italic;
+    color: var(--muted);
+    font-size: 16px;
+  }
+
+  /* ============ RECAP ARTIFACT ============ */
+  .md {
+    font-family: var(--serif);
+    color: var(--ink);
+    font-size: 17px;
+    line-height: 1.68;
+    text-wrap: pretty;
+  }
+  .md > *:first-child { margin-top: 0; }
+  .md h1 {
+    font-family: var(--serif);
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: -0.014em;
+    margin: 36px 0 12px;
+    color: var(--ink);
+  }
+  .md h2 {
+    font-family: var(--serif);
+    font-size: 21px;
+    font-weight: 600;
+    letter-spacing: -0.012em;
+    margin: 36px 0 10px;
+    color: var(--ink);
+  }
+  .md h3 {
+    font-family: var(--serif);
+    font-size: 17px;
+    margin: 22px 0 4px;
+    font-style: italic;
+    font-weight: 500;
+    color: var(--ink-2);
+    letter-spacing: 0.002em;
+  }
+  .md p { margin: 0 0 16px; }
+  .md strong { font-weight: 600; color: var(--ink); }
+  .md em { font-style: italic; }
+  .md ul, .md ol {
+    margin: 0 0 18px;
+    padding-left: 22px;
+  }
+  .md li {
+    margin-bottom: 8px;
+    padding-left: 4px;
+  }
+  .md li::marker { color: var(--muted); }
+  .md blockquote {
+    border-left: 2px solid var(--accent);
+    padding: 2px 0 2px 18px;
+    margin: 20px 0;
+    color: var(--ink-2);
+    font-style: italic;
+  }
+  .md code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.92em;
+    background: var(--paper-2);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+
+  .recap__footer {
+    margin-top: 44px;
+    padding-top: 24px;
+    border-top: 1px solid var(--rule);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .recap__short {
+    margin: 60px 0;
+    text-align: center;
+    font-family: var(--serif);
+    font-style: italic;
+    color: var(--muted);
+    font-size: 17px;
+  }
+
+  @media (min-width: 600px) {
+    .app { padding: 60px 32px 120px; }
+    .session__doc-title { font-size: 38px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .listening__dot, .listening__dot::after,
+    .recap-loading__dots span { animation: none; }
+    .listening__dot { box-shadow: 0 0 0 6px rgba(45, 74, 107, 0.1); }
+  }
 </style>
 </head>
 <body>
 
-<h1>Voice Tutor — Study</h1>
-<p class="muted">Pick a document or upload one, then start a voice session grounded in it.</p>
+<main class="app">
 
-<section id="picker">
-  <h2 style="font-size:1rem;">Documents</h2>
-  <div id="docList" class="muted">Loading…</div>
-  <form id="uploadForm" class="row">
-    <input type="file" id="fileInput" accept=".pdf,.md,.markdown,.txt" required />
-    <button type="submit" class="secondary">Upload</button>
-  </form>
-  <div class="row">
-    <span id="pickerStatus" class="muted"></span>
-  </div>
-</section>
+  <header class="wordmark" id="wordmark" data-context="picker">
+    <button class="wordmark__back" id="header-back" type="button" aria-label="Back to documents">← Documents</button>
+    <div class="wordmark__row">
+      <h1 class="wordmark__name">Voice Tutor</h1>
+      <span class="wordmark__sub">study mode</span>
+    </div>
+  </header>
 
-<section id="session" class="hidden">
-  <p>Session about: <strong id="sessionDocTitle"></strong></p>
-  <audio id="remoteAudio" autoplay playsinline></audio>
-  <div class="row">
-    <button id="startBtn">Start session</button>
-    <button id="endBtn" class="hidden">End session</button>
-    <button id="backBtn" class="secondary">Back</button>
-    <span id="sessionStatus" class="muted"></span>
-  </div>
-</section>
+  <section class="screen is-active" id="screen-picker">
+    <p class="lead">Pick a document to study.</p>
+    <p class="sub">Tap a document below to begin a voice session grounded in it.</p>
 
-<section id="ended" class="hidden">
-  <p id="endedStatus" class="muted">Generating recap…</p>
-  <div id="artifactView" class="hidden"></div>
-  <div class="row">
-    <button id="newBtn" class="secondary">New session</button>
-  </div>
-</section>
+    <div class="section-label">Documents</div>
+    <div id="doc-list-mount">
+      <div class="loading"><p class="loading__title">Loading…</p></div>
+    </div>
+
+    <div class="upload-row">
+      <button class="btn btn--neutral btn--block" id="add-doc" type="button">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"></path>
+        </svg>
+        <span id="add-doc-label">Add document</span>
+      </button>
+      <input type="file" class="hidden-file" id="file-input" accept=".pdf,.md,.markdown,.txt">
+      <p class="upload-status" id="upload-status"></p>
+    </div>
+  </section>
+
+  <section class="screen" id="screen-session">
+    <p class="session__ctx-label">Session about</p>
+    <h2 class="session__doc-title" id="session-doc-title"></h2>
+    <p class="session__doc-meta" id="session-doc-meta"></p>
+    <p class="session__summary" id="session-doc-summary" style="display:none;"></p>
+
+    <div class="session__divider"></div>
+
+    <div id="session-idle">
+      <div class="session__cta">
+        <button class="btn btn--primary btn--block" id="start-session" type="button">Start session</button>
+      </div>
+      <p class="session__hint">Make sure your microphone is allowed.</p>
+    </div>
+
+    <div id="session-active" style="display:none;">
+      <audio id="remote-audio" autoplay playsinline></audio>
+      <div class="listening" role="status" aria-live="polite">
+        <div class="listening__dot" aria-hidden="true"></div>
+        <div class="listening__label" id="listening-label">Connecting…</div>
+        <div class="listening__elapsed" id="elapsed">0:00</div>
+      </div>
+      <div class="session__active-actions">
+        <button class="btn btn--neutral btn--block" id="end-session" type="button">End session</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="screen" id="screen-ended">
+
+    <div id="recap-generating">
+      <div class="recap-loading" role="status" aria-live="polite">
+        <div class="recap-loading__dots" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div class="recap-loading__label" id="recap-loading-label">Generating recap…</div>
+      </div>
+    </div>
+
+    <div id="recap-ready" style="display:none;">
+      <article class="md" id="recap-body"></article>
+      <div class="recap__short" id="recap-short" style="display:none;"></div>
+
+      <div class="recap__footer">
+        <button class="btn btn--primary" id="new-session" type="button">Start another session</button>
+      </div>
+    </div>
+  </section>
+
+</main>
 
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-
 <script>
-const $ = id => document.getElementById(id);
-const show = id => { ['picker','session','ended'].forEach(s => $(s).classList.toggle('hidden', s !== id)); };
+  // ─── constants ─────────────────────────────────────
+  const MIN_RECAP_DURATION_SEC = 5;
+  const MAX_POLL_ATTEMPTS = 30;  // 30 × 2s = 60s
 
-let selectedDocId = null;
-let selectedDocTitle = null;
-let pc = null;
-let pcId = null;
-let sessionId = null;
-let connectedAt = null;  // ms timestamp when pc first reached 'connected'
-let localStream = null;  // mic stream from getUserMedia — stop tracks on session end
+  // ─── DOM refs ──────────────────────────────────────
+  const $ = id => document.getElementById(id);
+  const wordmark = $('wordmark');
+  const docListMount = $('doc-list-mount');
+  const uploadStatus = $('upload-status');
+  const addDocBtn = $('add-doc');
+  const addDocLabel = $('add-doc-label');
+  const fileInput = $('file-input');
+  const remoteAudio = $('remote-audio');
+  const elapsedEl = $('elapsed');
+  const listeningLabel = $('listening-label');
+  const recapBody = $('recap-body');
+  const recapShort = $('recap-short');
+  const recapLoadingLabel = $('recap-loading-label');
 
-const MIN_RECAP_DURATION_SEC = 5;
-const MAX_POLL_ATTEMPTS = 30;  // 30 ticks × 2s = 60s cap
+  // ─── state ─────────────────────────────────────────
+  let docs = [];
+  let currentDoc = null;
+  let sessionId = null;
+  let pc = null;
+  let pcId = null;
+  let localStream = null;
+  let connectedAt = null;
+  let sessionStartMs = null;
+  let elapsedTimer = null;
+  let pollTimer = null;
+  let pollAttempts = 0;
 
-async function loadDocs() {
-  const docs = await fetch('/api/documents').then(r => r.json());
-  const list = $('docList');
-  if (!docs.length) { list.textContent = 'No documents yet — upload one to start.'; return; }
-  list.innerHTML = '';
-  for (const d of docs) {
-    const card = document.createElement('div');
-    card.className = 'card';
-    card.dataset.id = d.document_id;
-    card.innerHTML = `<strong>${escapeHtml(d.title)}</strong><br><span class="muted">${d.char_count.toLocaleString()} chars · ${d.uploaded_at.slice(0,10)}</span>`;
-    card.onclick = () => selectDoc(d.document_id, d.title);
-    list.appendChild(card);
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  function fmtTime(s) {
+    const mm = Math.floor(s / 60);
+    const ss = (s % 60).toString().padStart(2, '0');
+    return `${mm}:${ss}`;
   }
-}
 
-function selectDoc(id, title) {
-  selectedDocId = id;
-  selectedDocTitle = title;
-  $('sessionDocTitle').textContent = title;
-  $('sessionStatus').textContent = '';
-  $('startBtn').classList.remove('hidden');
-  $('endBtn').classList.add('hidden');
-  $('backBtn').classList.remove('hidden');
-  show('session');
-}
+  // ─── state machine ─────────────────────────────────
+  function showState(name) {
+    const screenFor = {
+      'picker':           'screen-picker',
+      'session-idle':     'screen-session',
+      'session-active':   'screen-session',
+      'recap-generating': 'screen-ended',
+      'recap-ready':      'screen-ended',
+    };
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('is-active'));
+    $(screenFor[name]).classList.add('is-active');
+    wordmark.setAttribute('data-context', name);
 
-function escapeHtml(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    $('session-idle').style.display       = (name === 'session-idle')     ? '' : 'none';
+    $('session-active').style.display     = (name === 'session-active')   ? '' : 'none';
+    $('recap-generating').style.display   = (name === 'recap-generating') ? '' : 'none';
+    $('recap-ready').style.display        = (name === 'recap-ready')      ? '' : 'none';
 
-$('uploadForm').onsubmit = async e => {
-  e.preventDefault();
-  const file = $('fileInput').files[0];
-  if (!file) return;
-  $('pickerStatus').textContent = 'Uploading…';
-  const fd = new FormData();
-  fd.append('file', file);
-  const r = await fetch('/api/documents', { method: 'POST', body: fd });
-  if (!r.ok) {
-    $('pickerStatus').textContent = 'Upload failed: ' + (await r.text());
-    return;
-  }
-  $('pickerStatus').textContent = 'Uploaded.';
-  $('fileInput').value = '';
-  await loadDocs();
-};
-
-$('startBtn').onclick = async () => {
-  if (!selectedDocId) return;
-  sessionId = crypto.randomUUID();
-  $('startBtn').classList.add('hidden');
-  $('backBtn').classList.add('hidden');
-  $('endBtn').classList.remove('hidden');
-  $('sessionStatus').textContent = 'Connecting…';
-  await connect();
-};
-
-$('backBtn').onclick = () => {
-  selectedDocId = null;
-  selectedDocTitle = null;
-  show('picker');
-};
-
-async function connect() {
-  pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-  pc.addTransceiver('audio', { direction: 'sendrecv' });
-  localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  for (const t of localStream.getTracks()) pc.addTrack(t, localStream);
-  pc.ontrack = ev => { $('remoteAudio').srcObject = ev.streams[0]; };
-  pc.onconnectionstatechange = () => {
-    if (pc.connectionState === 'connected' && connectedAt === null) {
-      connectedAt = Date.now();
+    if (name !== 'session-active' && elapsedTimer) {
+      clearInterval(elapsedTimer); elapsedTimer = null;
     }
-    if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-      releaseMic();
+    if (name !== 'recap-generating' && pollTimer) {
+      clearInterval(pollTimer); pollTimer = null;
     }
-    const label = {
-      'new': 'Connecting…',
-      'connecting': 'Connecting…',
-      'connected': 'Listening — speak whenever you’re ready',
-      'disconnected': 'Disconnected',
-      'failed': 'Connection failed',
-      'closed': 'Disconnected',
-    }[pc.connectionState] || pc.connectionState;
-    $('sessionStatus').textContent = label;
-  };
+    if (name === 'session-active') {
+      sessionStartMs = Date.now();
+      updateElapsed();
+      elapsedTimer = setInterval(updateElapsed, 1000);
+    }
 
-  // Open and drain pipecat's RTVI data channel so the server-side queue
-  // doesn't fill up. We don't render the events — this just keeps them flowing.
-  const dc = pc.createDataChannel('messages');
-  dc.onmessage = () => {};
-
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-
-  const resp = await fetch('/api/offer', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      sdp: offer.sdp,
-      type: offer.type,
-      request_data: { document_id: selectedDocId, session_id: sessionId },
-    }),
-  });
-  const answer = await resp.json();
-  pcId = answer.pc_id;
-  await pc.setRemoteDescription(answer);
-
-  pc.onicecandidate = async ev => {
-    if (!ev.candidate) return;
-    await fetch('/api/offer', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pc_id: pcId, candidates: [ev.candidate.toJSON()] }),
-    });
-  };
-}
-
-let pollTimer = null;
-
-function releaseMic() {
-  if (!localStream) return;
-  for (const t of localStream.getTracks()) t.stop();
-  localStream = null;
-}
-
-$('endBtn').onclick = () => {
-  if (pc) pc.close();
-  releaseMic();
-  show('ended');
-  $('artifactView').classList.add('hidden');
-  const elapsedSec = connectedAt ? (Date.now() - connectedAt) / 1000 : 0;
-  if (elapsedSec < MIN_RECAP_DURATION_SEC) {
-    $('endedStatus').textContent = 'Session ended — too short for a recap.';
-    return;
+    window.scrollTo(0, 0);
   }
-  $('endedStatus').textContent = 'Generating recap…';
-  pollArtifact();
-};
 
-async function pollArtifact() {
-  if (pollTimer) clearInterval(pollTimer);
-  const target = sessionId;
-  let attempts = 0;
-  const tick = async () => {
-    if (target !== sessionId) return;  // user moved on
-    attempts++;
-    const r = await fetch(`/api/sessions/${target}/artifact`);
-    if (r.ok) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-      const md = await r.text();
-      const view = $('artifactView');
-      view.innerHTML = window.marked ? marked.parse(md) : md;
-      view.classList.remove('hidden');
-      $('endedStatus').textContent = 'Recap ready.';
+  function updateElapsed() {
+    if (!sessionStartMs) return;
+    elapsedEl.textContent = fmtTime(Math.floor((Date.now() - sessionStartMs) / 1000));
+  }
+
+  // ─── doc picker ────────────────────────────────────
+  async function loadDocs() {
+    docListMount.innerHTML = '<div class="loading"><p class="loading__title">Loading…</p></div>';
+    try {
+      docs = await fetch('/api/documents').then(r => r.json());
+    } catch (e) {
+      docListMount.innerHTML = '<div class="empty"><p class="empty__title">Couldn’t load documents.</p><p class="empty__sub">Check the server and refresh.</p></div>';
       return;
     }
-    if (attempts >= MAX_POLL_ATTEMPTS) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-      $('endedStatus').textContent = 'Recap didn’t generate within 60s — check server logs.';
+    renderDocs();
+  }
+
+  function renderDocs() {
+    if (!docs.length) {
+      docListMount.innerHTML = `
+        <div class="empty">
+          <p class="empty__title">No documents yet.</p>
+          <p class="empty__sub">Add one below to begin.</p>
+        </div>`;
+      return;
     }
-  };
-  tick();
-  pollTimer = setInterval(tick, 2000);
-}
+    docListMount.innerHTML = `<div class="doc-list">${docs.map(d => `
+      <button class="doc" type="button" data-id="${escapeHtml(d.document_id)}">
+        <span class="doc__body">
+          <span class="doc__title">${escapeHtml(d.title)}</span>
+          <span class="doc__meta">${d.char_count.toLocaleString()} chars<span class="doc__sep">·</span>${escapeHtml(d.uploaded_at.slice(0,10))}</span>
+        </span>
+        <svg class="doc__chev" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>
+      </button>`).join('')}</div>`;
+    docListMount.querySelectorAll('.doc').forEach(btn => {
+      btn.addEventListener('click', () => selectDoc(btn.dataset.id));
+    });
+  }
 
-$('newBtn').onclick = () => {
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-  selectedDocId = null;
-  selectedDocTitle = null;
-  sessionId = null;
-  connectedAt = null;
-  $('artifactView').classList.add('hidden');
-  show('picker');
+  function selectDoc(id) {
+    const d = docs.find(x => x.document_id === id);
+    if (!d) return;
+    currentDoc = d;
+    $('session-doc-title').textContent = d.title;
+    $('session-doc-meta').textContent = `${d.char_count.toLocaleString()} chars · added ${d.uploaded_at.slice(0,10)}`;
+    const summaryEl = $('session-doc-summary');
+    if (d.summary) {
+      summaryEl.textContent = d.summary;
+      summaryEl.style.display = '';
+    } else {
+      summaryEl.style.display = 'none';
+    }
+    showState('session-idle');
+  }
+
+  // ─── upload (one-step: file picked → uploads) ──────
+  addDocBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    addDocBtn.disabled = true;
+    addDocLabel.textContent = 'Uploading…';
+    uploadStatus.classList.remove('is-error');
+    uploadStatus.textContent = '';
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const r = await fetch('/api/documents', { method: 'POST', body: fd });
+      if (!r.ok) {
+        const msg = await r.text();
+        uploadStatus.classList.add('is-error');
+        uploadStatus.textContent = `Upload failed: ${msg}`;
+      } else {
+        await loadDocs();
+      }
+    } catch (err) {
+      uploadStatus.classList.add('is-error');
+      uploadStatus.textContent = `Upload failed: ${err.message || err}`;
+    } finally {
+      addDocBtn.disabled = false;
+      addDocLabel.textContent = 'Add document';
+      e.target.value = '';
+    }
+  });
+
+  // ─── session ───────────────────────────────────────
+  $('start-session').addEventListener('click', async () => {
+    if (!currentDoc) return;
+    sessionId = crypto.randomUUID();
+    connectedAt = null;
+    listeningLabel.textContent = 'Connecting…';
+    showState('session-active');
+    try {
+      await connect();
+    } catch (err) {
+      listeningLabel.textContent = 'Couldn’t start — check mic permission';
+    }
+  });
+
+  async function connect() {
+    pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    pc.addTransceiver('audio', { direction: 'sendrecv' });
+    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    for (const t of localStream.getTracks()) pc.addTrack(t, localStream);
+    pc.ontrack = ev => { remoteAudio.srcObject = ev.streams[0]; };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected' && connectedAt === null) {
+        connectedAt = Date.now();
+        listeningLabel.textContent = 'Listening…';
+      }
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        releaseMic();
+      }
+      if (pc.connectionState === 'failed') {
+        listeningLabel.textContent = 'Connection failed';
+      }
+    };
+
+    const dc = pc.createDataChannel('messages');
+    dc.onmessage = () => {};
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    const resp = await fetch('/api/offer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sdp: offer.sdp,
+        type: offer.type,
+        request_data: { document_id: currentDoc.document_id, session_id: sessionId },
+      }),
+    });
+    const answer = await resp.json();
+    pcId = answer.pc_id;
+    await pc.setRemoteDescription(answer);
+
+    pc.onicecandidate = async ev => {
+      if (!ev.candidate) return;
+      await fetch('/api/offer', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pc_id: pcId, candidates: [ev.candidate.toJSON()] }),
+      });
+    };
+  }
+
+  function releaseMic() {
+    if (!localStream) return;
+    for (const t of localStream.getTracks()) t.stop();
+    localStream = null;
+  }
+
+  function teardownConnection() {
+    if (pc) { try { pc.close(); } catch {} pc = null; pcId = null; }
+    releaseMic();
+  }
+
+  $('end-session').addEventListener('click', () => {
+    const elapsedSec = connectedAt ? Math.floor((Date.now() - connectedAt) / 1000) : 0;
+    teardownConnection();
+    if (elapsedSec < MIN_RECAP_DURATION_SEC) {
+      renderRecapShort('Session ended — too short for a recap.', elapsedSec);
+      return;
+    }
+    recapLoadingLabel.textContent = 'Generating recap…';
+    showState('recap-generating');
+    startPolling();
+  });
+
+  function renderRecapShort(message, elapsedSec) {
+    recapBody.style.display = 'none';
+    recapShort.style.display = '';
+    recapShort.textContent = `${message} (${fmtTime(elapsedSec)})`;
+    showState('recap-ready');
+  }
+
+  // ─── artifact polling ──────────────────────────────
+  function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollAttempts = 0;
+    const target = sessionId;
+    const tick = async () => {
+      if (target !== sessionId) return;
+      pollAttempts++;
+      try {
+        const r = await fetch(`/api/sessions/${target}/artifact`);
+        if (r.ok) {
+          clearInterval(pollTimer); pollTimer = null;
+          const md = await r.text();
+          renderRecap(md);
+          return;
+        }
+      } catch {}
+      if (pollAttempts >= MAX_POLL_ATTEMPTS) {
+        clearInterval(pollTimer); pollTimer = null;
+        recapLoadingLabel.textContent = 'Recap didn’t generate within 60s — check server logs.';
+      }
+    };
+    tick();
+    pollTimer = setInterval(tick, 2000);
+  }
+
+  function renderRecap(md) {
+    recapBody.innerHTML = window.marked ? marked.parse(md) : escapeHtml(md);
+    recapBody.style.display = '';
+    recapShort.style.display = 'none';
+    showState('recap-ready');
+  }
+
+  // ─── nav: header back & new session ────────────────
+  $('header-back').addEventListener('click', () => {
+    teardownConnection();
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    sessionId = null;
+    connectedAt = null;
+    sessionStartMs = null;
+    showState('picker');
+    loadDocs();
+  });
+
+  $('new-session').addEventListener('click', () => {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    sessionId = null;
+    connectedAt = null;
+    sessionStartMs = null;
+    listeningLabel.textContent = 'Connecting…';
+    showState('session-idle');
+  });
+
+  // ─── boot ──────────────────────────────────────────
   loadDocs();
-};
-
-loadDocs();
 </script>
 
 </body>
