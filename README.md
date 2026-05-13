@@ -175,11 +175,3 @@ Cost accounting:
 - **STT cost** is approximated from session wall-clock duration. Pipecat's Deepgram service doesn't surface billed minutes directly, but `SmallWebRTCTransport` streams continuously, so wall clock should track billable minutes within rounding. `tts_audio_sec_observed` and `stt_audio_sec_observed` are recorded as cross-checks.
 
 For actual billed amounts, check each provider's dashboard.
-
-## Next steps
-
-**Polish the `/study/` UI.** Currently functional but plain — single-file HTML, system fonts, no design system. Bar: make it feel like a product surface, not a prototype. `/chat/` intentionally stays on the pipecat prebuilt UI; its diagnostic panel (live tool calls, events, connection state) is too valuable for showing the architecture under the hood. The two modes will deliberately read as different — `/chat/` is the under-the-hood view, `/study/` is the polished product surface.
-
-**Figure out how to surface telemetry and artifacts in a demo.** Think through how to show, during a live demo, the `cost-log.md` row, the session analysis output at `~/second-brain/products/voice-tutor/session-analyses/`, the recap artifact at `~/.voice-tutor/artifacts/<id>.md`, and anything else worth pointing at (transcripts, `memory.md` growth, etc.). Today the recap renders inline in `/study/` and the cost log is a separate tab; everything else lives in `~/.voice-tutor/` or the vault.
-
-Proposed direction: extend the `/study/` ended view to render the cost-log row, session analysis, and memory.md append inline alongside the recap — one screen surfaces every artifact a session generates the moment it ends. Beats tab-switching for the "I measure all of this" credibility beat: they watch four artifacts materialize in one visual moment instead of you narrating which tab to look at next.
