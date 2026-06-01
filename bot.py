@@ -29,7 +29,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.services.anthropic.llm import AnthropicLLMService
-from pipecat.services.cartesia.tts import CartesiaTTSService
+from pipecat.services.cartesia.tts import CartesiaTTSService, GenerationConfig
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.transports.base_transport import TransportParams
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
@@ -180,6 +180,12 @@ _min_telemetry_override = os.getenv("VOICE_TUTOR_MIN_TELEMETRY_SEC")
 MIN_ANALYSIS_DURATION_SEC = int(_min_telemetry_override) if _min_telemetry_override else 120
 MIN_SUMMARY_DURATION_SEC = int(_min_telemetry_override) if _min_telemetry_override else 120
 
+# Cartesia Sonic-3 speed multiplier. Valid range [0.6, 1.5]; 1.0 is default.
+# Unset → omit the override entirely so behavior matches the pre-flag baseline.
+# Set VOICE_TUTOR_TTS_SPEED=0.85 in .env.local for a noticeably slower cadence.
+_tts_speed_override = os.getenv("VOICE_TUTOR_TTS_SPEED")
+TTS_SPEED: float | None = float(_tts_speed_override) if _tts_speed_override else None
+
 ANALYSIS_PROMPT = """\
 Analyze this voice conversation session transcript. Produce a structured markdown \
 document with the following sections. Be concise and specific — no filler.
@@ -301,7 +307,8 @@ WIKI_TAGLINE = (
 BREVITY_REMINDER = (
     "\n\n# Reminder\n\n"
     "Voice mode. One thought per turn. One to two sentences. "
-    "Then stop and let the user respond. Never monologue."
+    "Then stop and let the user respond. Never monologue. "
+    "Speak deliberately — use commas and brief pauses; don't rush."
 )
 
 # Appended after BREVITY_REMINDER in study mode. memory.md is ~2400 tokens of
@@ -593,6 +600,7 @@ async def bot(runner_args):
         settings=CartesiaTTSService.Settings(
             model="sonic-3",
             voice="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
+            generation_config=GenerationConfig(speed=TTS_SPEED) if TTS_SPEED is not None else None,
         ),
     )
 
