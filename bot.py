@@ -195,11 +195,20 @@ If no tool calls, say "None this session."
 ## Topics covered
 Numbered list of the main topics/threads discussed, with a one-sentence summary each.
 
-## Wiki usage vs general knowledge
-Estimate how much of the conversation drew from wiki content vs the LLM's general knowledge \
-vs Matt's own ideas. Use a simple table with columns: Source, Approx turns, Notes. \
-Sources are: "On-demand wiki pages", "Pre-loaded wiki", "General LLM knowledge", \
-"Matt's own knowledge/ideas". Note the key finding — was the wiki central or peripheral?
+## Knowledge sources
+Estimate how much of the conversation drew from each pre-loaded context source vs the \
+LLM's general knowledge vs Matt's own ideas. Use a simple table with columns: Source, \
+Approx turns, Notes. Sources are:
+- "On-demand wiki pages" — content fetched via read_wiki_page tool calls during the session
+- "Pre-loaded wiki INDEX" — the wiki table of contents in the system prompt (titles and one-line descriptions only, not full page content)
+- "Prior-session memory" — the "What we've discussed" block summarizing past sessions
+- "Most-recent transcript" — the verbatim block from the previous session
+- "General LLM knowledge" — things the model knows independent of any loaded context
+- "Matt's own knowledge/ideas" — claims, framing, or context Matt introduced himself
+
+Be specific in Notes about which facts came from which source — don't lump everything \
+pre-loaded into one bucket. Note the key finding: which source(s) carried the conversation, \
+and was the wiki itself central or peripheral?
 
 ## Interaction quality notes
 Bullet points on: pacing issues (did Matt ask to slow down?), STT errors (misheard words), \
