@@ -11,8 +11,22 @@ Enumerated list/load cases (counted toward the c8 floor):
 Plus supporting positive-path characterization of save_upload + load_document.
 """
 
+import asyncio
+
+import pytest
+
 import documents
 from documents import list_documents, load_document, save_upload
+
+
+@pytest.fixture(autouse=True)
+def _stub_summary(monkeypatch):
+    # Hermetic pin: list_documents/save_upload now backfill per-document summaries
+    # via a best-effort Haiku network call (documents._generate_summary). Stub it
+    # to the graceful "no summary" path (returns None) so the suite never touches
+    # the network. Summary *content* is model-dependent and intentionally not
+    # characterized; the shape (a "summary" key, None when unavailable) is.
+    monkeypatch.setattr(documents, "_generate_summary", lambda text: None)
 
 
 def test_save_upload_redirects_into_tmp_path(docs_dir):
@@ -23,9 +37,10 @@ def test_save_upload_redirects_into_tmp_path(docs_dir):
     assert (docs_dir / f"{doc_id}.txt").exists()
     assert (docs_dir / f"{doc_id}-a.md").exists()
     # Returned metadata shape + values (verbatim current behavior).
-    assert sorted(result.keys()) == ["char_count", "document_id", "title"]
+    assert sorted(result.keys()) == ["char_count", "document_id", "summary", "title"]
     assert result["title"] == "Doc One"
     assert result["char_count"] == len("# Doc One\nbody")
+    assert result["summary"] is None  # stubbed generator -> graceful no-summary path
 
 
 def test_load_document_returns_title_and_text(docs_dir):
@@ -52,13 +67,13 @@ def test_l3_load_missing_document_returns_none(docs_dir):
 def test_l2_list_empty_existing_directory(docs_dir):
     # L2: directory exists but contains no *.txt -> [].
     docs_dir.mkdir(parents=True, exist_ok=True)
-    assert list_documents() == []
+    assert asyncio.run(list_documents()) == []
 
 
 def test_l2_list_missing_directory_returns_empty(docs_dir):
     # L2: directory does not exist at all -> [] (early return).
     assert not docs_dir.exists()
-    assert list_documents() == []
+    assert asyncio.run(list_documents()) == []
 
 
 def test_l1_list_shape_and_deterministic_order(docs_dir):
@@ -68,7 +83,7 @@ def test_l1_list_shape_and_deterministic_order(docs_dir):
     r1 = save_upload("first.md", b"# First\nx")
     r2 = save_upload("second.md", b"# Second\ny")
 
-    docs = list_documents()
+    docs = asyncio.run(list_documents())
     assert len(docs) == 2
 
     # Exact shape of each entry (keys) — verbatim current behavior.
@@ -76,6 +91,7 @@ def test_l1_list_shape_and_deterministic_order(docs_dir):
         assert sorted(entry.keys()) == [
             "char_count",
             "document_id",
+            "summary",
             "title",
             "uploaded_at",
         ]
