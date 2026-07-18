@@ -240,6 +240,36 @@ def deterministic_locale():
     _locale.setlocale(_locale.LC_TIME, saved)
 
 
+@pytest.fixture
+def grounding_tmp(tmp_path, monkeypatch):
+    """Hermetically redirect grounding.WIKI_DIR to a per-test tmp_path.
+
+    ``grounding._load_index`` reads the module-level ``WIKI_DIR`` attribute at
+    call time, so patching that attribute on the *grounding* module (where the
+    helper is DEFINED) is the real resolution path — NOT ``wiki.WIKI_DIR`` and
+    not a stale local rebind. Guards that the real ~/second-brain wiki dir is
+    never created or mutated.
+
+    Yields the tmp wiki root so tests can seed / omit INDEX.md there.
+    """
+    import grounding
+
+    real_root = Path.home() / "second-brain" / "resources" / "wiki"
+    before = _snapshot(real_root)
+    real_existed = real_root.exists()
+
+    root = tmp_path / "wiki"
+    root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(grounding, "WIKI_DIR", root)
+
+    yield root
+
+    # Real production wiki dir must be untouched (not created, not mutated).
+    assert real_root.exists() == real_existed, "test created/removed ~/second-brain wiki"
+    after = _snapshot(real_root)
+    assert after == before, "production ~/second-brain wiki was mutated by a test"
+
+
 def _ss_snapshot(root):
     """Content snapshot of ``root`` (reuses the sha256 helper semantics)."""
     return _snapshot(root)
