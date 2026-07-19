@@ -20,3 +20,9 @@ The first thing the script prints is the pipecat banner (from `import pipecat`),
 ## Python changes require a server restart; static files do not
 
 `./start.sh` runs uvicorn without `--reload`, so any change to a `.py` file — including module-level string constants like `VIEWER_HTML` in `app.py` — only takes effect after re-running `./start.sh` (which kills the bound port and re-imports). Static files in `static/` (study.html, JS, CSS) are served via `FileResponse` per request and pick up edits without a restart. Don't tell the user "no restart needed" without checking which side of that line the edit lives on.
+
+## `app.py` imports pipecat at module top — test via pure helpers, not `TestClient`
+
+`app.py` does `from pipecat...` and `import bot` at module scope (lines ~25–35), so `import app` pulls in the full pipecat/ML stack and fails in any lightweight / Pipecat-free environment. Don't write route tests that do `from app import app` + a FastAPI `TestClient` — they can't run without the whole stack (and are unwinnable as a dev-harness contract, same family as "import bot without its deps").
+
+Instead follow the repo's established pattern: put logic in pure, importable modules (`documents.py`, `session_state.py`, `grounding.py`) with no pipecat import, keep the `app.py` route a thin wrapper, and test the pure helper hermetically by monkeypatching its module-level path constants (see `tests/conftest.py`). The HTTP route stays untested at the transport layer; the logic is fully covered at the helper layer.
