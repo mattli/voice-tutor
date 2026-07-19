@@ -110,7 +110,8 @@
   .wordmark[data-context="session-idle"]     .wordmark__back,
   .wordmark[data-context="session-active"]   .wordmark__back,
   .wordmark[data-context="recap-generating"] .wordmark__back,
-  .wordmark[data-context="recap-ready"]      .wordmark__back { display: block; }
+  .wordmark[data-context="recap-ready"]      .wordmark__back,
+  .wordmark[data-context="history"]          .wordmark__back { display: block; }
 
   /* ============ SCREENS ============ */
   .screen { display: none; }
@@ -247,6 +248,95 @@
     cursor: pointer;
   }
   .last-session-link:hover { color: var(--accent); }
+
+  /* ============ HISTORY ENTRY (top of picker) ============ */
+  .history-entry {
+    margin: 0 0 28px;
+  }
+  .history-entry__btn {
+    background: var(--card);
+    border: 1px solid var(--rule-2);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    transition: background-color 150ms ease, border-color 150ms ease;
+  }
+  .history-entry__btn:hover, .history-entry__btn:focus-visible {
+    background: var(--paper-2);
+    border-color: var(--ink-2);
+    outline: none;
+  }
+  .history-entry__label {
+    flex: 1;
+    font-family: var(--serif);
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--ink);
+    letter-spacing: -0.005em;
+  }
+  .history-entry__arrow {
+    color: var(--muted);
+    font-size: 18px;
+    line-height: 1;
+    transition: transform 150ms ease, color 150ms ease;
+  }
+  .history-entry__btn:hover .history-entry__arrow { color: var(--ink-2); transform: translateX(2px); }
+
+  /* ============ HISTORY LIST ============ */
+  .history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .history-row {
+    background: var(--card);
+    padding: 16px 18px;
+    cursor: pointer;
+    border: 0;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    transition: background-color 150ms ease;
+  }
+  .history-row:hover, .history-row:focus-visible { background: var(--paper-2); outline: none; }
+  .history-row__body { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .history-row__title {
+    font-family: var(--serif);
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--ink);
+    letter-spacing: -0.005em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .history-row__meta {
+    font-size: 13px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .history-row__sep { margin: 0 6px; opacity: 0.5; }
+  .history-row__chev {
+    color: var(--muted);
+    flex-shrink: 0;
+    transition: transform 150ms ease, color 150ms ease;
+  }
+  .history-row:hover .history-row__chev { color: var(--ink-2); transform: translateX(2px); }
 
   /* ============ BUTTONS ============ */
   .btn {
@@ -660,6 +750,13 @@
     <p class="lead">Pick a document to study.</p>
     <p class="sub">Tap a document below to begin a voice session grounded in it.</p>
 
+    <div class="history-entry">
+      <button class="history-entry__btn" id="open-history" type="button">
+        <span class="history-entry__label">Past sessions</span>
+        <span class="history-entry__arrow" aria-hidden="true">→</span>
+      </button>
+    </div>
+
     <div class="section-label">Documents</div>
     <div id="doc-list-mount">
       <div class="loading"><p class="loading__title">Loading…</p></div>
@@ -678,6 +775,15 @@
 
     <div class="last-session-row">
       <button class="last-session-link" id="view-last-session" type="button">View last session →</button>
+    </div>
+  </section>
+
+  <section class="screen" id="screen-history">
+    <p class="lead">Past sessions</p>
+    <p class="sub">Open a previous study session to revisit its recap.</p>
+
+    <div id="history-mount">
+      <div class="loading"><p class="loading__title">Loading…</p></div>
     </div>
   </section>
 
@@ -816,6 +922,7 @@
   function showState(name) {
     const screenFor = {
       'picker':           'screen-picker',
+      'history':          'screen-history',
       'session-idle':     'screen-session',
       'session-active':   'screen-session',
       'recap-ready':      'screen-ended',
@@ -1252,6 +1359,73 @@
     }
     await loadSessionView(latest.session_id);
   });
+
+  // ─── history: past sessions list ───────────────────
+  const historyMount = $('history-mount');
+
+  function fmtHistoryDate(iso) {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return String(iso ?? '');
+    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+  function fmtHistoryDuration(sec) {
+    const mins = Math.max(0, Math.round((sec ?? 0) / 60));
+    return `${mins}m`;
+  }
+  function fmtHistoryCost(usd) {
+    return `$${(usd ?? 0).toFixed(2)}`;
+  }
+
+  function renderHistory(sessions) {
+    if (!Array.isArray(sessions) || sessions.length === 0) {
+      historyMount.innerHTML = `
+        <div class="empty">
+          <p class="empty__title">No past sessions yet.</p>
+        </div>`;
+      return;
+    }
+    // Response order is newest-first per the endpoint contract — do not reorder.
+    const list = document.createElement('div');
+    list.className = 'history-list';
+    sessions.forEach(s => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'history-row';
+      btn.innerHTML = `
+        <span class="history-row__body">
+          <span class="history-row__title">${escapeHtml(s.document_title || 'Untitled document')}</span>
+          <span class="history-row__meta">${escapeHtml(fmtHistoryDate(s.session_start))}<span class="history-row__sep">·</span>${escapeHtml(fmtHistoryDuration(s.session_duration_sec))}<span class="history-row__sep">·</span>${escapeHtml(fmtHistoryCost(s.cost_total_usd))}</span>
+        </span>
+        <svg class="history-row__chev" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>`;
+      const sid = s.session_id;
+      btn.addEventListener('click', () => loadSessionView(sid));
+      list.appendChild(btn);
+    });
+    historyMount.innerHTML = '';
+    historyMount.appendChild(list);
+  }
+
+  async function openHistory() {
+    showState('history');
+    historyMount.innerHTML = '<div class="loading"><p class="loading__title">Loading…</p></div>';
+    let sessions;
+    try {
+      const r = await fetch('/api/sessions');
+      if (!r.ok) {
+        historyMount.innerHTML = '<div class="empty"><p class="empty__title">Couldn’t load past sessions.</p><p class="empty__sub">Check the server and try again.</p></div>';
+        return;
+      }
+      sessions = await r.json();
+    } catch (e) {
+      historyMount.innerHTML = '<div class="empty"><p class="empty__title">Couldn’t load past sessions.</p><p class="empty__sub">Check the server and try again.</p></div>';
+      return;
+    }
+    renderHistory(sessions);
+  }
+
+  $('open-history').addEventListener('click', openHistory);
 
   // ─── boot ──────────────────────────────────────────
   // If the URL has ?session=<id>, restore the recap-ready view for that

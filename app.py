@@ -34,6 +34,7 @@ from pipecat_ai_small_webrtc_prebuilt.frontend import SmallWebRTCPrebuiltUI
 
 import bot
 import documents
+import sessions
 
 HOST = os.getenv("VOICE_TUTOR_HOST", "0.0.0.0")
 small_webrtc_handler = SmallWebRTCRequestHandler(esp32_mode=False, host=HOST)
@@ -205,6 +206,14 @@ async def get_latest_session():
             "document_title": loaded[0] if loaded else None,
         }
     raise HTTPException(status_code=404, detail="no study session yet")
+
+
+@app.get("/api/sessions")
+async def list_sessions():
+    """All completed study sessions, newest first, for the /study/ history
+    surface. Thin wrapper — all listing logic lives in the pure sessions.py
+    helper (Pipecat-free, hermetically tested)."""
+    return sessions.list_study_sessions()
 
 
 COST_LOG_JSONL_PATH = Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "cost-log.jsonl"

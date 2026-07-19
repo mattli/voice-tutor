@@ -275,6 +275,47 @@ def _ss_snapshot(root):
     return _snapshot(root)
 
 
+# ---------------------------------------------------------------------------
+# sessions.py history-listing support (list_study_sessions)
+# ---------------------------------------------------------------------------
+
+
+def _file_state(path):
+    """Return a captured state for a single file: its sha256 hex if present, or
+    the ``'absent'`` sentinel if it does not exist. mtime is NOT used, and the
+    file is never created — we must handle the real vault cost-log being absent.
+    """
+    if not path.exists():
+        return "absent"
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.fixture
+def cost_log_tmp(tmp_path, monkeypatch):
+    """Hermetically redirect sessions.COST_LOG_JSONL_PATH to a per-test tmp file.
+
+    ``sessions.list_study_sessions`` reads the module-level ``COST_LOG_JSONL_PATH``
+    attribute at call time, so patching that attribute on the *sessions* module is
+    the real resolution path. Guards that the real vault cost-log.jsonl is never
+    created or mutated (handling the real file being absent as a distinct state).
+
+    Yields the tmp ledger path so tests can seed / omit JSONL rows there.
+    """
+    import sessions
+
+    real_path = sessions.COST_LOG_JSONL_PATH
+    before = _file_state(real_path)
+
+    ledger = tmp_path / "cost-log.jsonl"
+    monkeypatch.setattr(sessions, "COST_LOG_JSONL_PATH", ledger)
+
+    yield ledger
+
+    # The real vault cost-log must be byte-for-byte unchanged (or stay absent).
+    after = _file_state(real_path)
+    assert after == before, "production cost-log.jsonl was mutated by a test"
+
+
 @pytest.fixture
 def session_state_tmp(tmp_path, monkeypatch):
     """Hermetically redirect session_state's module-level Path constants to tmp.
