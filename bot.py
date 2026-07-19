@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import sys
@@ -7,6 +8,7 @@ from pathlib import Path
 
 import anthropic
 
+import documents
 import wiki
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -27,7 +29,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.services.anthropic.llm import AnthropicLLMService
-from pipecat.services.cartesia.tts import CartesiaTTSService
+from pipecat.services.cartesia.tts import CartesiaTTSService, GenerationConfig
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.transports.base_transport import TransportParams
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
@@ -157,19 +159,41 @@ class UsageAccumulator(BaseObserver):
             "total_cost_usd": round(total, 4),
         }
 
-VOICE_TUTOR_DIR = Path.home() / ".voice-tutor"
-TRANSCRIPTS_DIR = VOICE_TUTOR_DIR / "transcripts"
-PROFILE_PATH = VOICE_TUTOR_DIR / "profile.md"
+from session_state import (
+    MEMORY_PATH,
+    PROFILE_PATH,
+    TRANSCRIPTS_DIR,
+    VOICE_TUTOR_DIR,
+    _format_full_transcript_block,
+    _format_memory_date,
+    _format_session_time,
+    append_to_memory,
+    load_memory,
+    load_most_recent_transcript_block,
+    load_profile,
+)
+ARTIFACTS_DIR = VOICE_TUTOR_DIR / "artifacts"
 # Accumulating memory: one dated section per session, append-only.
 # Future: when this file exceeds ~2K tokens, compact older entries by summarizing
 # everything before a cutoff date into a single "before April X" block. Not today's
 # problem — revisit when the memory block starts dominating the system prompt.
-MEMORY_PATH = VOICE_TUTOR_DIR / "memory.md"
 COST_LOG_PATH = Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "cost-log.md"
 COST_LOG_JSONL_PATH = COST_LOG_PATH.with_suffix(".jsonl")
 SESSION_ANALYSIS_DIR = Path.home() / "second-brain" / "products" / "voice-tutor" / "session-analyses"
-MIN_ANALYSIS_DURATION_SEC = 300
-MIN_SUMMARY_DURATION_SEC = 120
+# Lower bound (in seconds) before we spend Haiku tokens on a session summary or
+# analysis. 120 is the production default — shorter sessions tend to produce
+# thin summaries that pollute memory.md. Set VOICE_TUTOR_MIN_TELEMETRY_SEC in
+# .env to override both thresholds together (useful for demos where you want
+# the full diagnostics panel to populate from a ~1-min session).
+_min_telemetry_override = os.getenv("VOICE_TUTOR_MIN_TELEMETRY_SEC")
+MIN_ANALYSIS_DURATION_SEC = int(_min_telemetry_override) if _min_telemetry_override else 120
+MIN_SUMMARY_DURATION_SEC = int(_min_telemetry_override) if _min_telemetry_override else 120
+
+# Cartesia Sonic-3 speed multiplier. Valid range [0.6, 1.5]; 1.0 is default.
+# Unset → omit the override entirely so behavior matches the pre-flag baseline.
+# Set VOICE_TUTOR_TTS_SPEED=0.85 in .env.local for a noticeably slower cadence.
+_tts_speed_override = os.getenv("VOICE_TUTOR_TTS_SPEED")
+TTS_SPEED: float | None = float(_tts_speed_override) if _tts_speed_override else None
 
 ANALYSIS_PROMPT = """\
 Analyze this voice conversation session transcript. Produce a structured markdown \
@@ -186,11 +210,20 @@ If no tool calls, say "None this session."
 ## Topics covered
 Numbered list of the main topics/threads discussed, with a one-sentence summary each.
 
-## Wiki usage vs general knowledge
-Estimate how much of the conversation drew from wiki content vs the LLM's general knowledge \
-vs Matt's own ideas. Use a simple table with columns: Source, Approx turns, Notes. \
-Sources are: "On-demand wiki pages", "Pre-loaded wiki", "General LLM knowledge", \
-"Matt's own knowledge/ideas". Note the key finding — was the wiki central or peripheral?
+## Knowledge sources
+Estimate how much of the conversation drew from each pre-loaded context source vs the \
+LLM's general knowledge vs Matt's own ideas. Use a simple table with columns: Source, \
+Approx turns, Notes. Sources are:
+- "On-demand wiki pages" — content fetched via read_wiki_page tool calls during the session
+- "Pre-loaded wiki INDEX" — the wiki table of contents in the system prompt (titles and one-line descriptions only, not full page content)
+- "Prior-session memory" — the "What we've discussed" block summarizing past sessions
+- "Most-recent transcript" — the verbatim block from the previous session
+- "General LLM knowledge" — things the model knows independent of any loaded context
+- "Matt's own knowledge/ideas" — claims, framing, or context Matt introduced himself
+
+Be specific in Notes about which facts came from which source — don't lump everything \
+pre-loaded into one bucket. Note the key finding: which source(s) carried the conversation, \
+and was the wiki itself central or peripheral?
 
 ## Interaction quality notes
 Bullet points on: pacing issues (did Matt ask to slow down?), STT errors (misheard words), \
@@ -206,6 +239,59 @@ Here is the session data:
 
 ### Transcript
 {transcript_json}
+"""
+
+STUDY_BASE_INSTRUCTION = (
+    "You are a study companion helping the user understand a specific document "
+    "they have loaded. Help them engage actively — ask what they want to focus "
+    "on, explain concepts when asked, surface connections, push back when their "
+    "understanding is shaky, and let them lead the direction.\n\n"
+    "Reference the document directly. Quote short passages when useful. Don't "
+    "summarize the whole thing unprompted — wait for the user to point at what "
+    "they want to dig into.\n\n"
+    "Keep responses tight. One thought at a time. This is voice — long monologues "
+    "don't work."
+)
+
+ARTIFACT_PROMPT = """\
+You are writing a markdown recap of a voice-mode study session about a specific \
+document. Output ONLY markdown — no preamble, no trailing prose.
+
+SCOPE — read carefully:
+- The recap covers ONLY what was actually discussed in the transcript below.
+- The document is provided as REFERENCE — use it to quote passages the user \
+pointed at, to disambiguate vague references, and to get terms/names right. \
+Do NOT summarize sections of the document that did not come up in conversation.
+- If the conversation was short or covered only one topic, the recap is short \
+and covers only that topic. Do not pad. Do not invent topics.
+- If a topic was named but not actually explored, it belongs in "Open threads", \
+not "Key points".
+
+Use this structure exactly:
+
+# Study session — {doc_title}
+Duration: {duration_mmss}
+
+## What we covered
+- short bullets, one per topic ACTUALLY discussed (not topics merely mentioned)
+
+## Key points
+### <topic>
+Substantive notes on what was said in the conversation about this topic — \
+paraphrase the user's reasoning and the tutor's responses, capture concrete \
+claims that were made, quote the document only where it sharpens a point that \
+came up. Two to four short paragraphs per topic. Omit this section entirely \
+if nothing was discussed in enough depth to warrant it.
+
+## Open threads
+Things raised but not resolved — questions to come back to. One bullet each. \
+Skip this section if there are none.
+
+### Transcript
+{transcript_json}
+
+### Document (reference only — do not summarize)
+{doc_text}
 """
 
 BASE_INSTRUCTION = (
@@ -225,75 +311,28 @@ WIKI_TAGLINE = (
     "connect ideas, and reference things he's been reading and learning about."
 )
 
+# Restated at the very end of the system prompt so it stays close to the model's
+# next-token decision after a long doc / wiki / memory block. Recency matters.
+BREVITY_REMINDER = (
+    "\n\n# Reminder\n\n"
+    "Voice mode. One thought per turn. One to two sentences. "
+    "Then stop and let the user respond. Never monologue. "
+    "Speak deliberately — use commas and brief pauses; don't rush."
+)
 
-def load_profile() -> str:
-    if PROFILE_PATH.exists():
-        return PROFILE_PATH.read_text()
-    return ""
+# Appended after BREVITY_REMINDER in study mode. memory.md is ~2400 tokens of
+# open-chat session summaries; without recency-priming, that volume drowns out
+# the thin STUDY_BASE_INSTRUCTION at the top and the model drifts toward general
+# conversation. This reminder pulls the persona back at the last moment.
+STUDY_REMINDER = (
+    "\n\n# Study mode\n\n"
+    "You're a study companion for the document above. The memory section is "
+    "background — reference past topics only when they directly illuminate "
+    "the document. Stay focused on what's in front of you."
+)
 
 
 WIKI_ENABLED = os.getenv("WIKI_ENABLED", "true").lower() in ("1", "true", "yes")
-
-
-def _format_memory_date(iso_ts: str) -> str:
-    dt = datetime.fromisoformat(iso_ts)
-    hour12 = dt.hour % 12 or 12
-    ampm = "AM" if dt.hour < 12 else "PM"
-    return f"{dt.strftime('%B')} {dt.day}, {dt.year} — {hour12}:{dt.minute:02d} {ampm}"
-
-
-def append_to_memory(transcript: dict, summary_text: str):
-    header = f"## {_format_memory_date(transcript['session_start'])}\n"
-    entry = header + summary_text.strip() + "\n\n"
-    if not MEMORY_PATH.exists():
-        MEMORY_PATH.write_text(
-            "# Memory — what we've discussed\n\n"
-            "One section per session, append-only. Summaries are lifted from "
-            "the `.summary.md` sidecar written alongside each transcript.\n\n"
-        )
-    with MEMORY_PATH.open("a") as f:
-        f.write(entry)
-
-
-def load_memory() -> str:
-    if not MEMORY_PATH.exists():
-        return ""
-    return MEMORY_PATH.read_text()
-
-
-def _format_session_time(iso_ts: str) -> str:
-    dt = datetime.fromisoformat(iso_ts)
-    # %-d / %-I strip leading zeros on macOS/Linux; avoid cross-platform flags.
-    month_day = dt.strftime("%B ") + str(dt.day)
-    hour12 = dt.hour % 12 or 12
-    ampm = "am" if dt.hour < 12 else "pm"
-    return f"{month_day}, {dt.year} at {hour12}:{dt.minute:02d}{ampm}"
-
-
-def _format_full_transcript_block(transcript: dict, header_suffix: str = "") -> str:
-    header = f"## Session from {_format_session_time(transcript['session_start'])}{header_suffix}\n"
-    lines = []
-    for turn in transcript["turns"]:
-        role = "You" if turn["role"] == "assistant" else "Matt"
-        lines.append(f"  {role}: {turn['content']}")
-    return header + "\n".join(lines)
-
-
-def load_most_recent_transcript_block() -> str | None:
-    """Return the most recent full-transcript block, or None if no transcripts exist.
-
-    Older sessions are no longer loaded here — they accumulate in memory.md instead.
-    """
-    if not TRANSCRIPTS_DIR.exists():
-        return None
-    files = sorted(
-        (f for f in TRANSCRIPTS_DIR.glob("*.json") if not f.name.endswith(".usage.json")),
-        reverse=True,
-    )
-    if not files:
-        return None
-    transcript = json.loads(files[0].read_text())
-    return _format_full_transcript_block(transcript, header_suffix=" (most recent)")
 
 
 SUMMARY_PROMPT = """\
@@ -351,11 +390,84 @@ def generate_session_analysis(stem: str, transcript: dict, summary: dict, tool_c
     return {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
 
 
-def build_system_instruction() -> str:
+async def generate_artifact(session_id: str, study_meta: dict, transcript: dict, duration_sec: float):
+    """Fire-and-forget Haiku call writing ~/.voice-tutor/artifacts/<session_id>.md.
+
+    Writes a separate row to cost-log.jsonl with kind="artifact" so the cost is
+    auditable without retroactively patching the synchronous session row.
+    """
+    duration_mmss = f"{int(duration_sec // 60)}:{int(duration_sec % 60):02d}"
+    prompt = ARTIFACT_PROMPT.format(
+        doc_title=study_meta["doc_title"],
+        doc_text=study_meta["doc_text"],
+        duration_mmss=duration_mmss,
+        transcript_json=json.dumps(transcript, indent=2),
+    )
+    try:
+        client = anthropic.Anthropic()
+        resp = await asyncio.to_thread(
+            client.messages.create,
+            model="claude-haiku-4-5-20251001",
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        markdown = resp.content[0].text
+    except Exception as e:
+        print(f"[artifact] failed for session_id={session_id}: {e}", file=sys.stderr, flush=True)
+        return
+
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = ARTIFACTS_DIR / f"{session_id}.md"
+    out_path.write_text(markdown)
+    print(f"[artifact] wrote {out_path}", file=sys.stderr, flush=True)
+
+    in_tok = resp.usage.input_tokens
+    out_tok = resp.usage.output_tokens
+    cost = (
+        in_tok / 1_000_000 * PRICE_ANTHROPIC_HAIKU_INPUT_PER_MTOK
+        + out_tok / 1_000_000 * PRICE_ANTHROPIC_HAIKU_OUTPUT_PER_MTOK
+    )
+    row = {
+        "kind": "artifact",
+        "session_id": session_id,
+        "document_id": study_meta["document_id"],
+        "input_tokens": in_tok,
+        "output_tokens": out_tok,
+        "cost_usd": round(cost, 4),
+    }
+    COST_LOG_JSONL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with COST_LOG_JSONL_PATH.open("a") as f:
+        f.write(json.dumps(row) + "\n")
+
+
+def build_system_instruction(study: dict | None = None) -> str:
+    """Assemble the system prompt.
+
+    Regular mode: base + profile + wiki INDEX + memory + most-recent transcript.
+    Study mode (study={doc_title, doc_text}): base + profile + memory + the doc.
+    Study mode skips the most-recent transcript, the wiki INDEX, and the wiki
+    tagline — the doc replaces those as the session's focus.
+    """
+    profile = load_profile()
+
+    if study is not None:
+        parts = [STUDY_BASE_INSTRUCTION]
+        if profile:
+            parts.append(f"\n## About the person you're talking to\n\n{profile}")
+        memory = load_memory()
+        if memory:
+            parts.append(
+                "\n# Background — Matt's prior topics (reference only if directly relevant to the document)\n\n"
+                + memory
+            )
+        parts.append(f"\n## Document: {study['doc_title']}\n\n{study['doc_text']}")
+        parts.append(BREVITY_REMINDER)
+        parts.append(STUDY_REMINDER)
+        return "\n".join(parts)
+
     base = BASE_INSTRUCTION + (WIKI_TAGLINE if WIKI_ENABLED else "")
     parts = [base]
 
-    profile = load_profile()
     if profile:
         parts.append(f"\n## About the person you're talking to\n\n{profile}")
 
@@ -372,6 +484,7 @@ def build_system_instruction() -> str:
     if most_recent:
         parts.append(f"\n# Most recent session\n\n{most_recent}")
 
+    parts.append(BREVITY_REMINDER)
     return "\n".join(parts)
 
 
@@ -381,12 +494,37 @@ async def bot(runner_args):
         params=TransportParams(audio_out_enabled=True, audio_in_enabled=True),
     )
 
+    body = getattr(runner_args, "body", None) or {}
+    document_id = body.get("document_id")
+    session_id_override = body.get("session_id")
+
+    study_meta: dict | None = None
+    if document_id:
+        loaded = documents.load_document(document_id)
+        if loaded is None:
+            print(f"[bot] document_id={document_id} not found; falling back to regular mode", file=sys.stderr, flush=True)
+        else:
+            doc_title, doc_text = loaded
+            study_meta = {
+                "document_id": document_id,
+                "doc_title": doc_title,
+                "doc_text": doc_text,
+                "session_id": session_id_override or document_id,
+            }
+
     stt = DeepgramSTTService(
         api_key=os.getenv("DEEPGRAM_API_KEY"),
         settings=DeepgramSTTService.Settings(model="nova-3", language="en"),
     )
 
-    system_instruction = build_system_instruction()
+    system_instruction = build_system_instruction(
+        study={"doc_title": study_meta["doc_title"], "doc_text": study_meta["doc_text"]}
+        if study_meta else None
+    )
+
+    if study_meta:
+        TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+        (TRANSCRIPTS_DIR / f"{study_meta['session_id']}.prompt.txt").write_text(system_instruction)
 
     llm = AnthropicLLMService(
         api_key=os.getenv("ANTHROPIC_API_KEY"),
@@ -404,10 +542,11 @@ async def bot(runner_args):
         settings=CartesiaTTSService.Settings(
             model="sonic-3",
             voice="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
+            generation_config=GenerationConfig(speed=TTS_SPEED) if TTS_SPEED is not None else None,
         ),
     )
 
-    tools = [wiki.tool_schema()] if WIKI_ENABLED else []
+    tools = [] if study_meta else ([wiki.tool_schema()] if WIKI_ENABLED else [])
     context = LLMContext(tools=ToolsSchema(standard_tools=tools))
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
@@ -416,7 +555,7 @@ async def bot(runner_args):
 
     usage = UsageAccumulator()
 
-    if WIKI_ENABLED:
+    if WIKI_ENABLED and not study_meta:
         llm.register_function("read_wiki_page", wiki.make_tool_handler(usage.mark_tool_call))
 
     pipeline = Pipeline([
@@ -459,7 +598,7 @@ async def bot(runner_args):
         if not turns:
             return
         TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-        stem = session_start.strftime("%Y-%m-%d-%H%M%S")
+        stem = study_meta["session_id"] if study_meta else session_start.strftime("%Y-%m-%d-%H%M%S")
         session_end = datetime.now()
         transcript = {
             "session_start": session_start.isoformat(),
@@ -547,6 +686,7 @@ async def bot(runner_args):
             f.write(row)
 
         jsonl_entry = {
+            "kind": "session",
             "session_id": session_start.strftime("%Y-%m-%dT%H%M%S"),
             "session_start": session_start.isoformat(),
             "session_end": session_end.isoformat(),
@@ -569,8 +709,20 @@ async def bot(runner_args):
             "cost_total_usd": summary["total_cost_usd"],
             "tool_calls": usage.tool_calls,
         }
+        if study_meta:
+            jsonl_entry["session_id"] = study_meta["session_id"]
+            jsonl_entry["mode"] = "study"
+            jsonl_entry["document_id"] = study_meta["document_id"]
         with COST_LOG_JSONL_PATH.open("a") as f:
             f.write(json.dumps(jsonl_entry) + "\n")
+
+        if study_meta:
+            asyncio.create_task(generate_artifact(
+                session_id=study_meta["session_id"],
+                study_meta=study_meta,
+                transcript=transcript,
+                duration_sec=summary["session_duration_sec"],
+            ))
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):

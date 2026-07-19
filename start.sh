@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+set -o pipefail
 
 cd "$(dirname "$0")"
 
@@ -21,4 +22,4 @@ for key in ANTHROPIC_API_KEY DEEPGRAM_API_KEY CARTESIA_API_KEY; do
     fi
 done
 
-exec uv run python bot.py --host 0.0.0.0 "$@"
+exec uv run uvicorn app:app --host 0.0.0.0 --port 7860 "$@" 2>&1 | tee -a voice-tutor.log
