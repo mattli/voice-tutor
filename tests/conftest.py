@@ -317,6 +317,32 @@ def cost_log_tmp(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def cost_audit_log_tmp(tmp_path, monkeypatch):
+    """Hermetically redirect cost_audit.COST_LOG_JSONL_PATH to a per-test tmp file.
+
+    The audit CLI reads the module-level ``COST_LOG_JSONL_PATH`` attribute at
+    call time, so patching that attribute on the *cost_audit* module is the real
+    resolution path — same pattern as ``cost_log_tmp`` for sessions.py. Guards
+    that the real vault cost-log.jsonl is never created or mutated (handling the
+    real file being absent as a distinct state).
+
+    Yields the tmp ledger path so tests can seed / omit JSONL rows there.
+    """
+    import cost_audit
+
+    real_path = cost_audit.COST_LOG_JSONL_PATH
+    before = _file_state(real_path)
+
+    ledger = tmp_path / "cost-log.jsonl"
+    monkeypatch.setattr(cost_audit, "COST_LOG_JSONL_PATH", ledger)
+
+    yield ledger
+
+    after = _file_state(real_path)
+    assert after == before, "production cost-log.jsonl was mutated by a test"
+
+
+@pytest.fixture
 def session_state_tmp(tmp_path, monkeypatch):
     """Hermetically redirect session_state's module-level Path constants to tmp.
 

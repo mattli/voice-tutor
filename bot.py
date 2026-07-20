@@ -34,22 +34,27 @@ from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.transports.base_transport import TransportParams
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 
+# Pricing constants were relocated verbatim into the pure, Pipecat-free
+# cost_audit module (so the cost-log auditor can recompute costs without
+# importing bot). bot.py re-imports every name here; values are unchanged and
+# the logger's math below is untouched.
 # Prices last verified 2026-04-15 against official pricing pages and
 # cross-checked with the 2026-04-14 session's provider dashboards.
 # Sources: claude.com/pricing, deepgram.com/pricing, cartesia.ai/pricing.
-PRICE_ANTHROPIC_INPUT_PER_MTOK = 3.00
-PRICE_ANTHROPIC_OUTPUT_PER_MTOK = 15.00
-PRICE_ANTHROPIC_CACHE_WRITE_PER_MTOK = 3.75
-PRICE_ANTHROPIC_CACHE_READ_PER_MTOK = 0.30
-# Haiku 4.5 powers the post-session summary + analysis calls.
-PRICE_ANTHROPIC_HAIKU_INPUT_PER_MTOK = 1.00
-PRICE_ANTHROPIC_HAIKU_OUTPUT_PER_MTOK = 5.00
-PRICE_DEEPGRAM_NOVA3_PER_MIN = 0.0077
-# Cartesia bills 1 credit per character submitted to the TTS WebSocket;
-# $5 / 100_000 credits on Pro plan = $0.00005 per character. Character count
-# comes from pipecat's TTSUsageMetricsData (exact len(text) sent to Cartesia),
-# not an estimate.
-PRICE_CARTESIA_PER_CHAR = 5.00 / 100_000
+# Haiku 4.5 powers the post-session summary + analysis calls. Cartesia bills 1
+# credit per character submitted to the TTS WebSocket; $5 / 100_000 credits on
+# Pro plan = $0.00005 per character. Character count comes from pipecat's
+# TTSUsageMetricsData (exact len(text) sent to Cartesia), not an estimate.
+from cost_audit import (
+    PRICE_ANTHROPIC_CACHE_READ_PER_MTOK,
+    PRICE_ANTHROPIC_CACHE_WRITE_PER_MTOK,
+    PRICE_ANTHROPIC_HAIKU_INPUT_PER_MTOK,
+    PRICE_ANTHROPIC_HAIKU_OUTPUT_PER_MTOK,
+    PRICE_ANTHROPIC_INPUT_PER_MTOK,
+    PRICE_ANTHROPIC_OUTPUT_PER_MTOK,
+    PRICE_CARTESIA_PER_CHAR,
+    PRICE_DEEPGRAM_NOVA3_PER_MIN,
+)
 
 # NOTE: cost-log.jsonl starts from the first session after this refactor
 # (2026-04-15+). Sessions logged before this (e.g. 2026-04-14) only exist as
