@@ -10,6 +10,7 @@ import anthropic
 
 import documents
 import wiki
+from usage_ledger import UsageLedger
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import (
@@ -60,22 +61,35 @@ from cost_audit import (
 # (2026-04-15+). Sessions logged before this (e.g. 2026-04-14) only exist as
 # rows in cost-log.md — there's no raw usage data to backfill for them.
 
+# Diagnostic: when VOICE_TUTOR_USAGE_TRACE is truthy, UsageAccumulator logs one
+# stderr line per on_push_frame observation of a usage-bearing frame (MetricsFrame /
+# InputAudioRawFrame / TTSAudioRawFrame). Off by default (one os.getenv + one `if`
+# on the hot path). Used to confirm the per-hop multi-count: each unique frame.id
+# should appear once per processor hop the frame traverses. See CLAUDE.md
+# "Pipecat observers fire per processor hop".
+USAGE_TRACE = os.getenv("VOICE_TUTOR_USAGE_TRACE", "").strip().lower() not in ("", "0", "false", "no")
+
+# Per-hop dedup for usage accounting. ON by default (the fix): UsageLedger counts
+# each frame's usage once, not once per processor hop it traverses. To restore the
+# legacy multi-count for a fast, no-rebuild revert, set VOICE_TUTOR_USAGE_DEDUP to
+# any of these (case-insensitive): 0, false, no, off, disable, disabled. ANY OTHER
+# value — including empty/unset — leaves dedup ON. See usage_ledger.py and CLAUDE.md
+# "Pipecat observers fire per processor hop". Note the unset default differs from
+# USAGE_TRACE: dedup defaults ON, the trace defaults OFF.
+_DEDUP_DISABLE_VALUES = ("0", "false", "no", "off", "disable", "disabled")
+USAGE_DEDUP = os.getenv("VOICE_TUTOR_USAGE_DEDUP", "").strip().lower() not in _DEDUP_DISABLE_VALUES
+
 
 class UsageAccumulator(BaseObserver):
     def __init__(self):
         super().__init__()
-        self.uncached_input_tokens = 0
-        self.cache_read_tokens = 0
-        self.cache_write_tokens = 0
-        self.output_tokens = 0
-        # Exact character count submitted to Cartesia (the billing unit).
-        self.tts_chars = 0
-        # Observed audio length from TTSAudioRawFrame bytes — kept as a
-        # cross-check / observability metric, not load-bearing for cost.
-        self.tts_audio_sec = 0.0
-        # Cross-check against session_duration_sec; divergence would signal a
-        # transport behavior change (e.g. VAD-gated audio_in).
-        self.stt_audio_sec = 0.0
+        # All usage counting + the cost summary live in the pure, Pipecat-free
+        # UsageLedger. This observer is a thin adapter: it extracts (frame.id,
+        # plain values) off pipecat frames and delegates. The ledger dedups by
+        # frame.id so per-hop multi-counting can't inflate usage (see its module
+        # docstring). Instantiated once per session, so the ledger's seen-id set
+        # is per-session by construction.
+        self.ledger = UsageLedger(dedup=USAGE_DEDUP)
         self.tool_calls: list[dict] = []
         # Set by the tool handler immediately after it runs; the next
         # TTSAudioRawFrame closes the measurement.
@@ -85,14 +99,35 @@ class UsageAccumulator(BaseObserver):
         entry = {"page": page, "start_monotonic": time.monotonic(), "timestamp": datetime.now().isoformat()}
         self._pending_tool = entry
 
+    def _trace(self, frame, data: "FramePushed", kind: str, counted: bool, extra: str = ""):
+        # One line per observation. `counted` reflects whether this observation
+        # actually incremented a counter (False once dedup lands and the frame.id
+        # was already seen). frame.id is the pipecat-unique per-instance id — the
+        # dedup key. Tally observations-per-id from these lines to see the hop
+        # multiple (pre-fix: N>1 all counted; post-fix: N observed, 1 counted).
+        src = type(data.source).__name__ if data.source is not None else "None"
+        dst = type(data.destination).__name__ if data.destination is not None else "None"
+        print(
+            f"[usage-trace] kind={kind} fid={frame.id} name={frame.name} "
+            f"src={src} dst={dst} dir={getattr(data.direction, 'name', data.direction)} "
+            f"counted={counted}{(' ' + extra) if extra else ''}",
+            file=sys.stderr, flush=True,
+        )
+
     async def on_push_frame(self, data: FramePushed):
         frame = data.frame
         # TTSAudioRawFrame check must precede InputAudioRawFrame because
         # both inherit from AudioRawFrame — TTS is output, STT is input.
         if isinstance(frame, TTSAudioRawFrame):
-            denom = frame.sample_rate * max(frame.num_channels, 1) * 2
-            if denom:
-                self.tts_audio_sec += len(frame.audio) / denom
+            counted = self.ledger.should_count(frame.id)
+            if USAGE_TRACE:
+                self._trace(frame, data, "tts_audio", counted, extra=f"bytes={len(frame.audio)}")
+            if counted:
+                denom = frame.sample_rate * max(frame.num_channels, 1) * 2
+                if denom:
+                    self.ledger.add_tts_audio(len(frame.audio) / denom)
+            # Tool-latency measurement is independent of usage dedup — it fires on
+            # the first post-tool audio observation and self-guards via _pending_tool.
             if self._pending_tool is not None:
                 latency = time.monotonic() - self._pending_tool["start_monotonic"]
                 self.tool_calls.append({
@@ -109,60 +144,42 @@ class UsageAccumulator(BaseObserver):
                 self._pending_tool = None
             return
         if isinstance(frame, InputAudioRawFrame):
-            denom = frame.sample_rate * max(frame.num_channels, 1) * 2
-            if denom:
-                self.stt_audio_sec += len(frame.audio) / denom
+            counted = self.ledger.should_count(frame.id)
+            if USAGE_TRACE:
+                self._trace(frame, data, "stt_audio", counted, extra=f"bytes={len(frame.audio)}")
+            if counted:
+                denom = frame.sample_rate * max(frame.num_channels, 1) * 2
+                if denom:
+                    self.ledger.add_stt_audio(len(frame.audio) / denom)
             return
         if isinstance(frame, MetricsFrame):
-            for m in frame.data:
-                if isinstance(m, LLMUsageMetricsData):
-                    u = m.value
-                    self.cache_read_tokens += u.cache_read_input_tokens or 0
-                    self.cache_write_tokens += u.cache_creation_input_tokens or 0
-                    # Anthropic's prompt_tokens already excludes cache reads/writes.
-                    self.uncached_input_tokens += u.prompt_tokens
-                    self.output_tokens += u.completion_tokens
-                elif isinstance(m, TTSUsageMetricsData):
-                    self.tts_chars += m.value
+            # One MetricsFrame can carry BOTH LLM and TTS usage, so the dedup
+            # decision is taken once per frame and applies to all its metrics.
+            counted = self.ledger.should_count(frame.id)
+            if USAGE_TRACE:
+                mtypes = []
+                for m in frame.data:
+                    if isinstance(m, LLMUsageMetricsData):
+                        mtypes.append("LLM")
+                    elif isinstance(m, TTSUsageMetricsData):
+                        mtypes.append(f"TTS({m.value})")
+                self._trace(frame, data, "metrics", counted, extra=f"mtypes={','.join(mtypes) or 'none'}")
+            if counted:
+                for m in frame.data:
+                    if isinstance(m, LLMUsageMetricsData):
+                        u = m.value
+                        # Anthropic's prompt_tokens already excludes cache reads/writes.
+                        self.ledger.add_llm_usage(
+                            prompt_tokens=u.prompt_tokens,
+                            cache_read=u.cache_read_input_tokens,
+                            cache_write=u.cache_creation_input_tokens,
+                            completion=u.completion_tokens,
+                        )
+                    elif isinstance(m, TTSUsageMetricsData):
+                        self.ledger.add_tts_chars(m.value)
 
     def summary(self, session_duration_sec: float) -> dict:
-        llm_input_cost = self.uncached_input_tokens / 1_000_000 * PRICE_ANTHROPIC_INPUT_PER_MTOK
-        llm_cache_read_cost = self.cache_read_tokens / 1_000_000 * PRICE_ANTHROPIC_CACHE_READ_PER_MTOK
-        llm_cache_write_cost = self.cache_write_tokens / 1_000_000 * PRICE_ANTHROPIC_CACHE_WRITE_PER_MTOK
-        llm_output_cost = self.output_tokens / 1_000_000 * PRICE_ANTHROPIC_OUTPUT_PER_MTOK
-        llm_cost = llm_input_cost + llm_cache_read_cost + llm_cache_write_cost + llm_output_cost
-
-        # Deepgram bills per minute of audio streamed over the open connection.
-        # SmallWebRTCTransport streams continuously, so session_duration_sec is
-        # ground-truth for billing. stt_audio_sec is an observed cross-check —
-        # should match within rounding; divergence signals a transport change.
-        stt_minutes = session_duration_sec / 60
-        stt_cost = stt_minutes * PRICE_DEEPGRAM_NOVA3_PER_MIN
-
-        tts_cost = self.tts_chars * PRICE_CARTESIA_PER_CHAR
-
-        total = llm_cost + stt_cost + tts_cost
-        return {
-            "session_duration_sec": round(session_duration_sec, 1),
-            "llm": {
-                "uncached_input_tokens": self.uncached_input_tokens,
-                "cache_read_tokens": self.cache_read_tokens,
-                "cache_write_tokens": self.cache_write_tokens,
-                "output_tokens": self.output_tokens,
-                "cost_usd": round(llm_cost, 4),
-            },
-            "stt": {
-                "minutes": round(stt_minutes, 2),
-                "audio_sec_observed": round(self.stt_audio_sec, 1),
-                "cost_usd": round(stt_cost, 4),
-            },
-            "tts": {
-                "chars": self.tts_chars,
-                "audio_sec_observed": round(self.tts_audio_sec, 1),
-                "cost_usd": round(tts_cost, 4),
-            },
-            "total_cost_usd": round(total, 4),
-        }
+        return self.ledger.summary(session_duration_sec)
 
 from session_state import (
     MEMORY_PATH,

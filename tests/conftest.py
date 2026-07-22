@@ -78,7 +78,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BOT_PATH = PROJECT_ROOT / "bot.py"
 
 # Project-local modules must NEVER be stubbed — they are imported for real.
-_PROJECT_LOCAL = {"session_state", "wiki", "documents", "bot", "app"}
+_PROJECT_LOCAL = {"session_state", "wiki", "documents", "bot", "app", "usage_ledger"}
 
 
 def _stdlib_names():
