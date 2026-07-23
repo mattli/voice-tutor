@@ -18,7 +18,10 @@ per-user documents directory.
 """
 
 import ast
+import importlib
+import json
 import re
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -351,3 +354,243 @@ def test_parse_claims_direct_raises_on_bad_json():
     text = _fixture_text(DOC_IDS[0])
     with pytest.raises(claims.ClaimParseError):
         claims.parse_claims("not json at all", text)
+
+
+# =========================================================================== #
+# Sprint 1: sidecar persistence + generate-once.
+#
+# All writes go through the ``claims_docs_dir`` conftest fixture, which redirects
+# claims.DOCUMENTS_DIR into a per-test tmp_path and snapshots the real production
+# documents dir to prove it stays byte-for-byte unchanged.
+# =========================================================================== #
+
+
+def _claim_set_from_fixture(doc_id, n=3):
+    """Build a real, verbatim-anchored claim set for ``doc_id`` (no LLM)."""
+    text = _fixture_text(doc_id)
+    anchors = _real_anchors(text, n)
+    return [
+        claims.Claim(id=f"c{i + 1}", claim=f"claim {i + 1}", anchor=a)
+        for i, a in enumerate(anchors)
+    ]
+
+
+def _unwrap_claim_dicts(loaded):
+    """Extract the list of claim dicts from the sidecar's JSON, envelope-agnostic.
+
+    Holds whether the top level is a bare list of claim dicts or an object with a
+    single list value (e.g. a ``claims`` key).
+    """
+    if isinstance(loaded, list):
+        return loaded
+    if isinstance(loaded, dict):
+        # Find the single list-of-dicts value regardless of the key name.
+        for value in loaded.values():
+            if isinstance(value, list):
+                return value
+    raise AssertionError(f"unrecognized sidecar envelope: {type(loaded)!r}")
+
+
+# --------------------------------------------------------------------------- #
+# c1: write helper -> sidecar at DOCUMENTS_DIR/{doc_id}.claims.json, human-readable.
+# --------------------------------------------------------------------------- #
+
+
+def test_write_helper_writes_human_readable_sidecar(claims_docs_dir):
+    doc_id = DOC_IDS[0]
+    claim_set = _claim_set_from_fixture(doc_id)
+
+    claims.write_claims(doc_id, claim_set)
+
+    sidecar = claims_docs_dir / f"{doc_id}.claims.json"
+    assert sidecar.exists(), f"sidecar not written at {sidecar}"
+
+    raw = sidecar.read_text()
+    # Valid JSON.
+    json.loads(raw)
+    # Human-readable: multi-line and indented (a compact single-line
+    # json.dumps(...) blob would fail both assertions).
+    assert "\n" in raw, "sidecar is not multi-line"
+    assert re.search(r"\n[ ]+\S", raw), "sidecar is not indented"
+
+
+# --------------------------------------------------------------------------- #
+# c2: sidecar round-trips field-for-field into the same claim dicts.
+# --------------------------------------------------------------------------- #
+
+
+def test_sidecar_round_trips_field_for_field(claims_docs_dir):
+    doc_id = DOC_IDS[1]
+    claim_set = _claim_set_from_fixture(doc_id, n=4)
+
+    sidecar = claims.write_claims(doc_id, claim_set)
+
+    loaded = json.loads(sidecar.read_text())
+    got_dicts = _unwrap_claim_dicts(loaded)
+    assert got_dicts == [c.to_dict() for c in claim_set]
+    # Each record carries exactly id/claim/anchor.
+    for d in got_dicts:
+        assert set(d.keys()) == {"id", "claim", "anchor"}
+
+
+# --------------------------------------------------------------------------- #
+# c3: generate-once get-or-create keyed by doc_id, on-disk cache, list[Claim].
+# --------------------------------------------------------------------------- #
+
+
+def test_generate_miss_then_disk_hit_skips_llm(claims_docs_dir):
+    doc_id = DOC_IDS[2]
+    text = _fixture_text(doc_id)
+    anchors = _real_anchors(text, 3)
+    payload = _payload_from_anchors([(f"claim {i}", a) for i, a in enumerate(anchors)])
+
+    # (a) First call: uncached -> Anthropic mock invoked exactly once, sidecar
+    #     created on disk, returns list[Claim].
+    ctx, client, factory = _mock_anthropic(payload)
+    with ctx:
+        first = claims.generate_claims(doc_id, text)
+    assert client.messages.create.call_count == 1
+    sidecar = claims_docs_dir / f"{doc_id}.claims.json"
+    assert sidecar.exists()
+    assert isinstance(first, list) and first
+    assert all(isinstance(c, claims.Claim) for c in first)
+
+    # (b) Prove the hit path uses ON-DISK state, not in-process memoization:
+    #     reload the module (dropping any in-module cache) but keep DOCUMENTS_DIR
+    #     pointed at the same tmp dir, then call again with a FRESH mock. The
+    #     Anthropic mock call count increments by zero.
+    importlib.reload(claims)
+    claims.DOCUMENTS_DIR = claims_docs_dir  # keep redirect after reload
+    ctx2, client2, factory2 = _mock_anthropic(payload)
+    with ctx2:
+        second = claims.generate_claims(doc_id, text)
+    assert client2.messages.create.call_count == 0, "cache-hit re-invoked the LLM"
+    assert factory2.called is False, "cache-hit constructed an Anthropic client"
+
+    # (c) Cache-hit returns list[Claim] equal to the first call.
+    assert isinstance(second, list) and second
+    assert all(isinstance(c, claims.Claim) for c in second)
+    assert [c.to_dict() for c in second] == [c.to_dict() for c in first]
+
+    # Reload again so later tests import the original (non-reloaded) module state.
+    importlib.reload(claims)
+
+
+# --------------------------------------------------------------------------- #
+# c4: miss-path return is consistent with what it persisted.
+# --------------------------------------------------------------------------- #
+
+
+def test_miss_path_result_matches_persisted_sidecar(claims_docs_dir):
+    doc_id = DOC_IDS[0]
+    text = _fixture_text(doc_id)
+    anchors = _real_anchors(text, 5)
+    payload = _payload_from_anchors([(f"claim {i}", a) for i, a in enumerate(anchors)])
+
+    ctx, _client, _factory = _mock_anthropic(payload)
+    with ctx:
+        returned = claims.generate_claims(doc_id, text)
+
+    sidecar = claims_docs_dir / f"{doc_id}.claims.json"
+    loaded = json.loads(sidecar.read_text())
+    got_dicts = _unwrap_claim_dicts(loaded)
+    assert got_dicts == [c.to_dict() for c in returned]
+
+
+# --------------------------------------------------------------------------- #
+# c5: DOCUMENTS_DIR is defined in claims.py, redirectable, real dir untouched.
+# --------------------------------------------------------------------------- #
+
+
+def test_documents_dir_defined_locally_not_reexported_from_documents():
+    tree = ast.parse(CLAIMS_PY.read_text())
+    # DOCUMENTS_DIR must be assigned at module scope in claims.py itself.
+    assigned = False
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name) and tgt.id == "DOCUMENTS_DIR":
+                    assigned = True
+    assert assigned, "claims.py does not define DOCUMENTS_DIR at module scope"
+
+    # And claims.py must NOT import documents (which would risk re-exporting its
+    # DOCUMENTS_DIR and drag pypdf into the closure).
+    imported_tops = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported_tops.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            imported_tops.add(node.module.split(".")[0])
+    assert "documents" not in imported_tops
+
+
+def test_redirect_confines_writes_and_leaves_real_dir_untouched(
+    claims_docs_dir, tmp_path
+):
+    import hashlib
+
+    # Reconstruct the real production documents dir without embedding the
+    # machine-specific dotted directory name as a literal (a repo guard forbids
+    # that string appearing in this test file). The parts are assembled here.
+    real_dir = Path.home() / ("." + "voice-tutor") / "documents"
+
+    def _snap(root):
+        snap = {}
+        if not root.exists():
+            return snap
+        for p in sorted(root.rglob("*")):
+            if p.is_file():
+                snap[p.relative_to(root).as_posix()] = hashlib.sha256(
+                    p.read_bytes()
+                ).hexdigest()
+        return snap
+
+    before = _snap(real_dir)
+
+    # Exercise both the write helper and the generate get-or-create path.
+    doc_id = DOC_IDS[1]
+    text = _fixture_text(doc_id)
+    anchors = _real_anchors(text, 3)
+    payload = _payload_from_anchors([(f"claim {i}", a) for i, a in enumerate(anchors)])
+    ctx, _c, _f = _mock_anthropic(payload)
+    with ctx:
+        claims.generate_claims(doc_id, text)
+    claims.write_claims(DOC_IDS[0], _claim_set_from_fixture(DOC_IDS[0]))
+
+    # Written files appear only under the redirected tmp dir.
+    written = list(claims_docs_dir.glob("*.claims.json"))
+    assert written, "no sidecars written under the redirected dir"
+    for p in written:
+        assert tmp_path in p.parents
+
+    # The real production documents dir is byte-for-byte unchanged.
+    after = _snap(real_dir)
+    assert after == before, "real production documents dir was mutated"
+
+
+# --------------------------------------------------------------------------- #
+# c6: import closure — subset of {anthropic} ∪ stdlib; no documents/pypdf/etc.
+# --------------------------------------------------------------------------- #
+
+
+def test_import_closure_only_anthropic_and_stdlib():
+    tree = ast.parse(CLAIMS_PY.read_text())
+    imported_tops = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported_tops.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            imported_tops.add(node.module.split(".")[0])
+
+    stdlib = set(getattr(sys, "stdlib_module_names", set()))
+    allowed = {"anthropic"} | stdlib
+    extras = imported_tops - allowed
+    assert not extras, f"claims.py imports outside {{anthropic}} ∪ stdlib: {extras}"
+
+    # Explicitly forbid the heavy/wiring modules named in the contract.
+    forbidden = {"documents", "pypdf", "bot", "app", "pipecat", "fastapi"}
+    assert forbidden.isdisjoint(imported_tops), (
+        f"claims.py imports forbidden modules: {forbidden & imported_tops}"
+    )

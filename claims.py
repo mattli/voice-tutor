@@ -19,8 +19,16 @@ satisfiable):
 
 import json
 from dataclasses import dataclass, asdict
+from pathlib import Path
 
 import anthropic
+
+# Storage root, mirroring documents.DOCUMENTS_DIR (Path.home()/".voice-tutor"/
+# "documents"). Defined LOCALLY here — deliberately NOT imported/re-exported from
+# documents.py — so this module's import closure stays limited to anthropic +
+# stdlib (importing documents.py would drag pypdf into the closure). Referenced at
+# call time inside the persistence helpers so tests can redirect it.
+DOCUMENTS_DIR = Path.home() / ".voice-tutor" / "documents"
 
 MODEL = "claude-sonnet-4-5-20250929"
 MAX_TOKENS = 8_000
@@ -157,3 +165,81 @@ def extract_claims(document_text: str) -> list[Claim]:
     )
     payload = _extract_text_payload(response)
     return parse_claims(payload, document_text)
+
+
+# --------------------------------------------------------------------------- #
+# Sprint 1: sidecar persistence + generate-once.
+#
+# Mirrors documents.py's summary-sidecar pattern: documents._summary_path writes
+# DOCUMENTS_DIR / f"{doc_id}.summary.txt" beside the doc, via a small path helper,
+# generated once. Here the sidecar is DOCUMENTS_DIR / f"{doc_id}.claims.json",
+# holding human-readable (indented) JSON. DOCUMENTS_DIR is read at call time so
+# tests can redirect it into a tmp_path.
+# --------------------------------------------------------------------------- #
+
+# Top-level JSON key wrapping the claim list in the sidecar envelope.
+_CLAIMS_KEY = "claims"
+
+
+def _claims_path(doc_id: str) -> Path:
+    """Sidecar path for ``doc_id``'s claim set, beside the document.
+
+    Resolves ``DOCUMENTS_DIR`` at call time (module attribute lookup) so a test
+    that monkeypatches ``claims.DOCUMENTS_DIR`` redirects the write.
+    """
+    return DOCUMENTS_DIR / f"{doc_id}.claims.json"
+
+
+def _serialize(claims: list[Claim]) -> str:
+    """Serialize ``claims`` to human-readable (indented, multi-line) JSON text."""
+    envelope = {_CLAIMS_KEY: [c.to_dict() for c in claims]}
+    return json.dumps(envelope, indent=2, ensure_ascii=False)
+
+
+def _deserialize(text: str) -> list[Claim]:
+    """Reconstruct :class:`Claim` records from serialized sidecar ``text``."""
+    data = json.loads(text)
+    raw = data[_CLAIMS_KEY] if isinstance(data, dict) else data
+    return [
+        Claim(id=item["id"], claim=item["claim"], anchor=item["anchor"])
+        for item in raw
+    ]
+
+
+def write_claims(doc_id: str, claims: list[Claim]) -> Path:
+    """Persist ``claims`` to the ``{doc_id}.claims.json`` sidecar; return its path.
+
+    Writes human-readable, indented JSON next to the document, mirroring
+    documents._summary_path/save_upload's sidecar write. Creates
+    ``DOCUMENTS_DIR`` if needed.
+    """
+    path = _claims_path(doc_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_serialize(claims))
+    return path
+
+
+def load_claims(doc_id: str) -> list[Claim] | None:
+    """Return the cached claim set for ``doc_id``, or None if no sidecar exists."""
+    path = _claims_path(doc_id)
+    if not path.exists():
+        return None
+    return _deserialize(path.read_text())
+
+
+def generate_claims(doc_id: str, document_text: str) -> list[Claim]:
+    """Get-or-create the claim set for ``doc_id``, generated once per document.
+
+    If the ``{doc_id}.claims.json`` sidecar already exists ON DISK, its claim
+    records are reconstructed and returned WITHOUT invoking the Anthropic client
+    (no redundant LLM call). Otherwise the (mocked-in-tests) LLM decomposition
+    runs, the sidecar is written, and the fresh records are returned.
+
+    The return type is identical on both paths: ``list[Claim]``.
+    """
+    cached = load_claims(doc_id)
+    if cached is not None:
+        return cached
+    claims = extract_claims(document_text)
+    write_claims(doc_id, claims)
+    return claims
