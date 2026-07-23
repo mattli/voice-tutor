@@ -19,13 +19,13 @@ Robustness against real model output (learned from a credentialed smoke run):
     dict. Markdown fences and JSON quote-escaping become structurally
     impossible rather than politely requested away.
   * Anchor resolution. The model's job is to POINT at the supporting passage,
-    not reproduce it byte-perfectly. Its best-effort anchor is normalized
-    (dashes, quote styles, whitespace, case) and located in the source text via
-    fuzzy match; the RESOLVED verbatim source substring (plus char offsets) is
-    what gets stored, so the persisted artifact stays byte-exact against the
-    document — which downstream scoring depends on. An anchor that cannot be
-    resolved above :data:`RESOLVE_THRESHOLD` is KEPT and flagged
-    ``anchor_unresolved`` rather than discarded.
+    not reproduce it byte-perfectly. Its best-effort anchor is matched to the
+    source only by PROVABLE substring — exact, or exact after cosmetic folding
+    (dashes, quote styles, whitespace, case) — and the stored span is byte-exact
+    against the document, which downstream scoring depends on. An anchor with
+    genuine content drift is NOT given a guessed span; it is KEPT and flagged
+    ``anchor_unresolved`` (raw text preserved, offsets null) rather than risking
+    a silently-wrong span. Each claim records its ``resolution`` tier.
 
 Offset contract for scoring: the document is canonicalized to Unicode NFC before
 resolution, so ``anchor_start``/``anchor_end`` index the NFC form, and the stored
@@ -34,7 +34,6 @@ text; if slicing by offset, slice ``unicodedata.normalize("NFC", document_text)`
 See :class:`Claim` for the full contract.
 """
 
-import difflib
 import hashlib
 import json
 import os
@@ -62,10 +61,6 @@ MAX_DOC_CHARS_IN = 100_000
 # Bounded retries for RETRYABLE extraction outcomes only (empty claim list,
 # transient API errors) — never for max_tokens truncation, which is deterministic.
 MAX_EXTRACT_ATTEMPTS = 3
-
-# Minimum normalized-similarity for a drifted anchor to count as "resolved" to a
-# source span. Below this, the claim is kept but flagged anchor_unresolved.
-RESOLVE_THRESHOLD = 0.75
 
 # The prompt encodes the required granularity:
 #   * claims a person could articulate in 1-3 spoken sentences,
@@ -179,7 +174,12 @@ class Claim:
         anchor_start: Start char offset of the anchor in the NFC document, or None.
         anchor_end: End char offset (exclusive) in the NFC document, or None.
         anchor_unresolved: True if the anchor could not be located in the source
-            above ``RESOLVE_THRESHOLD``; the claim is kept regardless.
+            as a provable substring; the claim is kept regardless.
+        resolution: How the anchor was resolved — ``"exact"`` (verbatim
+            substring), ``"normalized"`` (substring after cosmetic folding), or
+            ``"unresolved"`` (genuine drift; offsets null, ``anchor`` is the raw
+            model text). Lets scoring distinguish fallback strategies; the
+            per-doc unresolved rate is a quality signal.
     """
 
     id: str
@@ -188,6 +188,7 @@ class Claim:
     anchor_start: int | None = None
     anchor_end: int | None = None
     anchor_unresolved: bool = False
+    resolution: str = "unresolved"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -201,7 +202,7 @@ class AnchorResolution:
     start: int | None
     end: int | None
     unresolved: bool
-    score: float
+    tier: str  # "exact" | "normalized" | "unresolved"
 
 
 def _claim_id(index: int) -> str:
@@ -261,85 +262,28 @@ def _normalize_with_map(s: str):
     return "".join(out), idx
 
 
-def _trim_isolated_edges(blocks: list):
-    """Drop leading/trailing matching blocks reachable only across a gap larger
-    than the block itself.
-
-    A short edge match separated from the core by a big gap is almost always
-    coincidental — e.g. a typo's trailing character matching the first letter of
-    the NEXT sentence. Left in, it stretches the span past the true phrase
-    boundary (the mirror of the mid-word-truncation bug). Interior gaps (a
-    dropped/added word inside the phrase) are preserved: only the ENDS are
-    trimmed, and only when the edge block is no larger than the gap crossed.
-    """
-    blocks = list(blocks)
-    while len(blocks) > 1:
-        prev, last = blocks[-2], blocks[-1]
-        gap = max(last.a - (prev.a + prev.size), last.b - (prev.b + prev.size))
-        if last.size <= gap:
-            blocks.pop()
-        else:
-            break
-    while len(blocks) > 1:
-        first, nxt = blocks[0], blocks[1]
-        gap = max(nxt.a - (first.a + first.size), nxt.b - (first.b + first.size))
-        if first.size <= gap:
-            blocks.pop(0)
-        else:
-            break
-    return blocks
-
-
-def _fuzzy_locate(norm_src: str, na: str):
-    """Locate the TRUE source phrase in ``norm_src`` best matching ``na``.
-
-    Returns (start, end, score) in ``norm_src`` coordinates, or None. The span is
-    sized to the SOURCE phrase — the first..last matching block within a
-    slack-padded window around the longest common block, AFTER trimming isolated
-    coincidental edge matches — NOT to ``len(na)``. So an insertion/deletion in
-    the model's anchor never truncates the stored span mid-word (short side) nor
-    stretches it across a sentence boundary (long side).
-    """
-    lm = difflib.SequenceMatcher(None, norm_src, na, autojunk=False).find_longest_match(
-        0, len(norm_src), 0, len(na)
-    )
-    if lm.size == 0:
-        return None
-    # Pad the window so small indels don't clip the true phrase; spurious edge
-    # matches are then trimmed by _trim_isolated_edges.
-    trail = max(16, len(na) // 4)
-    lo = max(0, lm.a - lm.b - 4)
-    hi = min(len(norm_src), (lm.a - lm.b) + len(na) + trail)
-    local = norm_src[lo:hi]
-    blocks = [
-        b
-        for b in difflib.SequenceMatcher(None, local, na, autojunk=False).get_matching_blocks()
-        if b.size > 0
-    ]
-    if not blocks:
-        return None
-    blocks = _trim_isolated_edges(blocks)
-    start = lo + blocks[0].a
-    end = lo + blocks[-1].a + blocks[-1].size
-    score = difflib.SequenceMatcher(None, norm_src[start:end], na, autojunk=False).ratio()
-    return start, end, score
-
-
 def resolve_anchor(
     anchor: str, document_text: str, norm_src: str | None = None, idx: list | None = None
 ) -> AnchorResolution:
-    """Locate ``anchor`` in ``document_text``, tolerating cosmetic model drift.
+    """Locate ``anchor`` in ``document_text`` by PROVABLE substring match only.
 
     ``document_text`` and ``anchor`` are NFC-normalized up front so a decomposed
-    (NFD) source and a composed (NFC) anchor of the same text align. Returned
-    offsets index — and ``.text`` is a byte-exact substring of — the NFC form of
-    ``document_text``. Callers resolving many anchors against one document may
-    pass a precomputed ``norm_src``/``idx`` (from ``_normalize_with_map`` of the
-    NFC document) to avoid re-normalizing the whole document per anchor.
+    (NFD) source and a composed (NFC) anchor of the same text align. Two tiers
+    produce offsets, and BOTH are provably a real source span:
 
-    Fast path: exact substring (1.0). Else exact normalized substring (1.0,
-    cosmetic drift). Else fuzzy-match; if score >= ``RESOLVE_THRESHOLD`` return
-    the true source span, otherwise the anchor flagged unresolved.
+      * ``"exact"``      — ``anchor`` is a verbatim substring of the NFC document.
+      * ``"normalized"`` — ``anchor`` matches after cosmetic folding (dashes,
+        quote styles, whitespace, case); the STORED span is the exact source
+        substring at the mapped offsets, byte-exact.
+
+    Anything else — genuine content drift (typos, dropped/added/hallucinated
+    words) — is deliberately NOT resolved. Guessing an approximate span is an
+    ambiguous alignment problem whose every simple heuristic silently truncates
+    or over-extends the stored evidence (three such mirror bugs were found and
+    removed). Instead the anchor is returned flagged ``"unresolved"`` — claim
+    kept, raw anchor text preserved, offsets null — a SAFE, visible fallback
+    rather than corrupt-but-confident evidence. Unresolved rate is a per-doc
+    quality signal, not a failure.
 
     When ``norm_src``/``idx`` are supplied the caller guarantees ``document_text``
     is ALREADY NFC (see :func:`claims_from_records`), so the whole-document NFC
@@ -352,28 +296,22 @@ def resolve_anchor(
     else:
         doc = document_text  # caller guarantees this is already NFC
 
+    # Tier 1: exact verbatim substring.
     pos = doc.find(anchor_nfc)
     if pos != -1:
-        return AnchorResolution(anchor_nfc, pos, pos + len(anchor_nfc), False, 1.0)
+        return AnchorResolution(anchor_nfc, pos, pos + len(anchor_nfc), False, "exact")
 
+    # Tier 2: exact substring after cosmetic folding, mapped back byte-exact.
     na, _ = _normalize_with_map(anchor_nfc)
     na = na.strip()
-    if not na:
-        return AnchorResolution(anchor_nfc, None, None, True, 0.0)
+    if na:
+        p = norm_src.find(na)
+        if p != -1:
+            start, end = idx[p], idx[p + len(na) - 1] + 1
+            return AnchorResolution(doc[start:end], start, end, False, "normalized")
 
-    p = norm_src.find(na)
-    if p != -1:
-        start, end = idx[p], idx[p + len(na) - 1] + 1
-        return AnchorResolution(doc[start:end], start, end, False, 1.0)
-
-    span = _fuzzy_locate(norm_src, na)
-    if span is None:
-        return AnchorResolution(anchor_nfc, None, None, True, 0.0)
-    s, e, score = span
-    if score >= RESOLVE_THRESHOLD:
-        start, end = idx[s], idx[e - 1] + 1
-        return AnchorResolution(doc[start:end], start, end, False, round(score, 4))
-    return AnchorResolution(anchor_nfc, None, None, True, round(score, 4))
+    # Genuine content drift: keep the claim, flag unresolved, preserve raw anchor.
+    return AnchorResolution(anchor_nfc, None, None, True, "unresolved")
 
 
 def claims_from_records(raw_claims, document_text: str) -> list[Claim]:
@@ -413,6 +351,7 @@ def claims_from_records(raw_claims, document_text: str) -> list[Claim]:
                 anchor_start=res.start,
                 anchor_end=res.end,
                 anchor_unresolved=res.unresolved,
+                resolution=res.tier,
             )
         )
     return out
@@ -580,7 +519,8 @@ def _records_to_claims(data) -> list[Claim]:
         unresolved = (
             bool(item.get("anchor_unresolved", False)) or start is None or end is None
         )
-        out.append(Claim(cid, claim, anchor, start, end, unresolved))
+        resolution = "unresolved" if unresolved else item.get("resolution", "normalized")
+        out.append(Claim(cid, claim, anchor, start, end, unresolved, resolution))
     return out
 
 

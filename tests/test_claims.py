@@ -364,7 +364,7 @@ def test_wellformed_response_parses_without_raising():
 
 
 # --------------------------------------------------------------------------- #
-# Anchor resolution unit tests (the fuzzy-locate layer).
+# Anchor resolution unit tests — PROVABLE substring tiers only (no fuzzy).
 # --------------------------------------------------------------------------- #
 
 
@@ -372,78 +372,75 @@ def test_resolve_exact_verbatim_anchor():
     text = _fixture_text(DOC_IDS[0])
     span = _real_anchors(text, 1)[0]
     res = claims.resolve_anchor(span, text)
-    assert res.unresolved is False and res.score == 1.0
+    assert res.unresolved is False and res.tier == "exact"
     assert text[res.start : res.end] == span
 
 
-def test_resolve_cosmetic_drift_returns_verbatim_source_span():
+def test_resolve_cosmetic_drift_resolves_normalized_to_verbatim_span():
     text = _fixture_text(DOC_IDS[0])
-    # Find a source span containing letters, then introduce cosmetic drift:
-    # swap hyphens for em-dashes, straight for curly quotes, upper-case, and
-    # collapse/expand whitespace — the kind of drift real model output shows.
+    # Cosmetic drift only — em-dashes, curly quotes, case, whitespace — which the
+    # normalized tier folds away; the STORED span is still the byte-exact source.
     span = next(a for a in _real_anchors(text, 40) if len(a) > 40)
     drifted = span.upper().replace("-", "—").replace("'", "’").replace("  ", " ")
     drifted = re.sub(r"\s+", "   ", drifted)  # expand internal whitespace
     res = claims.resolve_anchor(drifted, text)
-    assert res.unresolved is False, "cosmetic drift should still resolve"
-    # The STORED text is the byte-exact original span, not the drifted input.
+    assert res.unresolved is False and res.tier == "normalized"
     assert res.text == text[res.start : res.end]
     assert res.text in text
 
 
-def test_resolve_below_threshold_is_unresolved():
+def test_resolve_garbage_anchor_is_unresolved():
     text = _fixture_text(DOC_IDS[0])
     res = claims.resolve_anchor("qwx zzptqr vbnm lkjhg fdsapoiuy nonsense", text)
-    assert res.unresolved is True
+    assert res.unresolved is True and res.tier == "unresolved"
     assert res.start is None and res.end is None
-    assert res.score < claims.RESOLVE_THRESHOLD
 
 
 # --------------------------------------------------------------------------- #
-# Anchor resolution regression tests (findings #1/#2): the stored span must be
-# the TRUE source phrase, byte-exact, for both indel drift and NFD/NFC skew.
+# Conservative-resolution walls. The fuzzy span-guesser was REMOVED because
+# every heuristic boundary it drew had an inverse silent-corruption bug (chop <->
+# bleed <-> over-trim). Genuine content drift must now land UNRESOLVED — claim
+# kept, raw anchor preserved, offsets null — never a guessed/wrong span. These
+# pin all four historical failure inputs to that safe outcome.
 # --------------------------------------------------------------------------- #
 
 
-def test_fuzzy_anchor_stores_true_source_span_not_model_length_slice():
-    # Finding #1: a drifted anchor shorter/longer than the true source phrase
-    # must NOT truncate/extend the stored span mid-word.
-    doc = "Intro paragraph. The system caches the rubric per document. Later text."
-    phrase = "The system caches the rubric per document"
-
-    # Deletion drift ("documnt" — one char dropped): stored span keeps full word.
-    res = claims.resolve_anchor("the system caches the rubric per documnt", doc)
-    assert res.unresolved is False
-    assert res.text == phrase, f"deletion drift chopped the span: {res.text!r}"
-    assert doc[res.start : res.end] == res.text
-
-    # Insertion drift (extra word): stored span is still the true source phrase.
-    res2 = claims.resolve_anchor("the system quickly caches the rubric per document", doc)
-    assert res2.unresolved is False
-    assert res2.text == phrase, f"insertion drift mis-sized the span: {res2.text!r}"
-    assert doc[res2.start : res2.end] == res2.text
-
-
-def test_fuzzy_anchor_does_not_bleed_past_true_phrase_boundary():
-    # MIRROR of the chop bug (this layer's bugs come in inverse pairs): a stray
-    # trailing char in the anchor whose match coincides with the start of the
-    # NEXT sentence must NOT stretch the stored span across the boundary.
-    doc = "Photosynthesis converts light. The leaf absorbs energy."
-    res = claims.resolve_anchor("Photosynthesis converts lightt", doc)  # dup trailing t
-    assert res.unresolved is False
-    assert res.text == "Photosynthesis converts light", f"span bled: {res.text!r}"
-    assert doc[res.start : res.end] == res.text
-    assert "The" not in res.text and ". " not in res.text  # no bleed into next sentence
-
-    # Mirror on the leading side: a stray leading char must not drag the span back.
-    doc2 = "The leaf is green. Photosynthesis converts light."
-    res2 = claims.resolve_anchor("hotosynthesis converts light", doc2)  # dropped leading P
-    assert res2.unresolved is False
-    assert res2.text.endswith("Photosynthesis converts light") or res2.text.endswith(
-        "hotosynthesis converts light"
-    ), f"leading span mis-sized: {res2.text!r}"
-    assert doc2[res2.start : res2.end] == res2.text
-    assert "green" not in res2.text  # no bleed back into the previous sentence
+@pytest.mark.parametrize(
+    "doc,anchor,label",
+    [
+        # chop wall: one-char deletion typo inside a word.
+        (
+            "Intro. The system caches the rubric per document. Later.",
+            "the system caches the rubric per documnt",
+            "deletion-typo",
+        ),
+        # bleed wall: stray trailing char coincidentally matching the next sentence.
+        (
+            "Photosynthesis converts light. The leaf absorbs energy.",
+            "Photosynthesis converts lightt",
+            "trailing-bleed",
+        ),
+        # dropped-lead-phrase: real leading token abutting an interior insertion.
+        (
+            "Item one.    Item two follows immediately after a long run here.",
+            "Item one is great.    Item two follows immediately after a long run",
+            "dropped-lead",
+        ),
+        # hallucinated-name: model substitutes a wrong name mid-anchor.
+        (
+            "According to the filing, CEO Marguerite Okonkwo-Basile will step down soon.",
+            "CEO Reynard Thistlewick will step down soon.",
+            "hallucinated-name",
+        ),
+    ],
+)
+def test_content_drift_is_unresolved_never_a_guessed_span(doc, anchor, label):
+    res = claims.resolve_anchor(anchor, doc)
+    assert res.unresolved is True, f"{label}: expected unresolved, got {res.text!r}"
+    assert res.tier == "unresolved"
+    assert res.start is None and res.end is None
+    # The raw model anchor is preserved (NFC-normalized), not a truncated span.
+    assert res.text == unicodedata.normalize("NFC", anchor)
 
 
 def test_nfd_source_nfc_anchor_resolves_to_full_span():
@@ -502,11 +499,17 @@ def test_golden_records_via_tool_path_resolve_drift(doc_id):
     assert len(result) == len(records)  # nothing dropped
     assert 10 <= len(result) <= 50, f"{len(result)} claims outside 10-50 guidance"
 
-    resolved = [c for c in result if not c.anchor_unresolved]
-    for c in resolved:
-        # Byte-exact against the NFC document at the stored offsets.
-        assert nfc[c.anchor_start : c.anchor_end] == c.anchor
-    assert len(resolved) >= 0.7 * len(records)
+    for c in result:
+        if c.anchor_unresolved:
+            # Unresolved: safe fallback — null offsets, resolution tier recorded.
+            assert c.anchor_start is None and c.anchor_end is None
+            assert c.resolution == "unresolved"
+        else:
+            # Resolved: byte-exact source span, provable tier.
+            assert nfc[c.anchor_start : c.anchor_end] == c.anchor
+            assert c.resolution in ("exact", "normalized")
+    # On real payloads the vast majority still resolve via exact/normalized; the
+    # exact rate is a quality signal, not a hard gate, so we don't assert a floor.
 
 
 # =========================================================================== #
@@ -560,6 +563,7 @@ def test_sidecar_round_trips_field_for_field(claims_docs_dir):
             "anchor_start",
             "anchor_end",
             "anchor_unresolved",
+            "resolution",
         }
 
 
@@ -571,8 +575,8 @@ def test_sidecar_round_trips_resolved_offsets(claims_docs_dir):
     span = _real_anchors(text, 1)[0]
     start = text.find(span)
     claim_set = [
-        claims.Claim("c1", "resolved claim", span, start, start + len(span), False),
-        claims.Claim("c2", "unresolved claim", "raw model anchor", None, None, True),
+        claims.Claim("c1", "resolved claim", span, start, start + len(span), False, "exact"),
+        claims.Claim("c2", "unresolved claim", "raw model anchor", None, None, True, "unresolved"),
     ]
     sidecar = claims.write_claims(doc_id, claim_set)
     reloaded = claims._deserialize(sidecar.read_text())
