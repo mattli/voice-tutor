@@ -26,6 +26,7 @@ import importlib
 import json
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -399,10 +400,58 @@ def test_resolve_below_threshold_is_unresolved():
 
 
 # --------------------------------------------------------------------------- #
-# Golden payloads from a real credentialed smoke run.
-# These are the actual Sonnet responses (markdown-fenced, drifted anchors, and
-# one with unescaped inner quotes) — the cases the mocked suite was blind to.
+# Anchor resolution regression tests (findings #1/#2): the stored span must be
+# the TRUE source phrase, byte-exact, for both indel drift and NFD/NFC skew.
 # --------------------------------------------------------------------------- #
+
+
+def test_fuzzy_anchor_stores_true_source_span_not_model_length_slice():
+    # Finding #1: a drifted anchor shorter/longer than the true source phrase
+    # must NOT truncate/extend the stored span mid-word.
+    doc = "Intro paragraph. The system caches the rubric per document. Later text."
+    phrase = "The system caches the rubric per document"
+
+    # Deletion drift ("documnt" — one char dropped): stored span keeps full word.
+    res = claims.resolve_anchor("the system caches the rubric per documnt", doc)
+    assert res.unresolved is False
+    assert res.text == phrase, f"deletion drift chopped the span: {res.text!r}"
+    assert doc[res.start : res.end] == res.text
+
+    # Insertion drift (extra word): stored span is still the true source phrase.
+    res2 = claims.resolve_anchor("the system quickly caches the rubric per document", doc)
+    assert res2.unresolved is False
+    assert res2.text == phrase, f"insertion drift mis-sized the span: {res2.text!r}"
+    assert doc[res2.start : res2.end] == res2.text
+
+
+def test_nfd_source_nfc_anchor_resolves_to_full_span():
+    # Finding #2: a decomposed (NFD) source and a composed (NFC) anchor of the
+    # SAME text must align — no dropped leading/trailing letter, not unresolved.
+    phrase = "André plays café jazz nightly"
+    doc = unicodedata.normalize("NFD", "Intro. " + phrase + " The end.")  # decomposed
+    anchor = unicodedata.normalize("NFC", phrase)  # composed (model output form)
+
+    res = claims.resolve_anchor(anchor, doc)
+    assert res.unresolved is False, "NFD/NFC skew wrongly flagged unresolved"
+    nfc_doc = unicodedata.normalize("NFC", doc)
+    # Offsets index the NFC document; stored text is the full composed phrase.
+    assert nfc_doc[res.start : res.end] == res.text
+    assert res.text == phrase  # leading 'A' and trailing 'y' intact
+
+
+# --------------------------------------------------------------------------- #
+# Golden payloads from a real credentialed smoke run — the actual Sonnet
+# responses (markdown-fenced, real drifted anchors). Fed through the structured
+# tool-use path (the only production path), exercising resolution on real drift.
+# --------------------------------------------------------------------------- #
+
+
+def _records_from_payload(doc_id: str):
+    """Strip the markdown fence off a captured payload and return its records."""
+    raw = _raw_payload(doc_id).strip()
+    m = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL)
+    inner = m.group(1).strip() if m else raw
+    return json.loads(inner)["claims"]
 
 
 def test_golden_payloads_committed_and_fenced():
@@ -415,61 +464,27 @@ def test_golden_payloads_committed_and_fenced():
 
 
 @pytest.mark.parametrize("doc_id", PARSEABLE_PAYLOAD_DOCS)
-def test_golden_fenced_payload_parses_and_resolves_drift(doc_id):
+def test_golden_records_via_tool_path_resolve_drift(doc_id):
     fixture_text = _fixture_text(doc_id)
-    raw = _raw_payload(doc_id)
+    nfc = unicodedata.normalize("NFC", fixture_text)
+    records = _records_from_payload(doc_id)
 
-    # The raw payload is fenced; the defensive text path must strip it and parse.
-    data = claims._extract_json_object(raw)
-    raw_anchors = [c["anchor"] for c in data["claims"]]
     # Sanity: this real payload genuinely contains drifted (non-verbatim) anchors.
-    drift = [a for a in raw_anchors if a not in fixture_text]
+    drift = [r for r in records if r["anchor"] not in fixture_text]
     assert drift, "expected real anchor drift in the captured payload"
 
-    result = claims.parse_claims(raw, fixture_text)
-    # Nothing dropped — every model claim survives.
-    assert len(result) == len(raw_anchors)
-    # Density-driven guidance band (not a hard ceiling).
-    assert 10 <= len(result) <= 50, f"{len(result)} claims outside 10-50"
-
-    # Every RESOLVED anchor is now a byte-exact source span.
-    resolved = [c for c in result if not c.anchor_unresolved]
-    for c in resolved:
-        assert c.anchor in fixture_text
-        assert fixture_text[c.anchor_start : c.anchor_end] == c.anchor
-    # The resolution layer recovered the large majority of drifted anchors.
-    assert len(resolved) >= 0.7 * len(raw_anchors)
-
-
-def test_golden_malformed_payload_degrades_cleanly():
-    # doc 2's real output has an unescaped inner quote -> invalid JSON. The text
-    # path must surface a clean ClaimParseError, not crash. (The structured
-    # tool-use path never hits this — the SDK returns a parsed dict.)
-    fixture_text = _fixture_text(MALFORMED_PAYLOAD_DOC)
-    raw = _raw_payload(MALFORMED_PAYLOAD_DOC)
-    with pytest.raises(claims.ClaimParseError):
-        claims.parse_claims(raw, fixture_text)
-
-
-@pytest.mark.parametrize("doc_id", PARSEABLE_PAYLOAD_DOCS)
-def test_golden_records_via_tool_path_resolve_end_to_end(doc_id):
-    # Feed the real captured records through the structured (tool-use) path.
-    fixture_text = _fixture_text(doc_id)
-    data = claims._extract_json_object(_raw_payload(doc_id))
-    records = data["claims"]
     ctx, _c, _f = _mock_anthropic(records)
     with ctx:
         result = claims.extract_claims(fixture_text)
-    assert len(result) == len(records)  # kept, not dropped
-    for c in result:
-        if not c.anchor_unresolved:
-            assert fixture_text[c.anchor_start : c.anchor_end] == c.anchor
 
+    assert len(result) == len(records)  # nothing dropped
+    assert 10 <= len(result) <= 50, f"{len(result)} claims outside 10-50 guidance"
 
-def test_parse_claims_direct_raises_on_bad_json():
-    text = _fixture_text(DOC_IDS[0])
-    with pytest.raises(claims.ClaimParseError):
-        claims.parse_claims("not json at all", text)
+    resolved = [c for c in result if not c.anchor_unresolved]
+    for c in resolved:
+        # Byte-exact against the NFC document at the stored offsets.
+        assert nfc[c.anchor_start : c.anchor_end] == c.anchor
+    assert len(resolved) >= 0.7 * len(records)
 
 
 # =========================================================================== #

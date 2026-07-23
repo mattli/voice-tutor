@@ -31,7 +31,7 @@ Robustness against real model output (learned from a credentialed smoke run):
 import difflib
 import hashlib
 import json
-import re
+import os
 import unicodedata
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -216,78 +216,119 @@ def _canon_char(ch: str) -> str:
 
 
 def _normalize_with_map(s: str):
-    """Return (normalized_text, index_map).
+    """Return (normalized_text, index_map) for an ALREADY NFC-normalized string.
 
-    ``index_map[k]`` is the ORIGINAL index in ``s`` that produced the k-th
-    normalized character — so a span located in normalized space can be mapped
-    back to a byte-exact span of the original. Normalization: NFKC, canonical
-    dashes/quotes, collapsed whitespace, casefold.
+    ``index_map[k]`` is the index in ``s`` that produced the k-th normalized
+    character — so a span located in normalized space maps back to a byte-exact
+    span of ``s``. Applies only cosmetic folding (canonical dashes/quotes,
+    collapsed whitespace, casefold). Unicode NFC composition is done by the
+    caller on the WHOLE string first — per-character normalization cannot compose
+    a base char with its following combining marks, which desynced NFD sources
+    from NFC anchors of the same text.
     """
     out: list[str] = []
     idx: list[int] = []
     prev_ws = False
     for i, ch in enumerate(s):
-        for c in unicodedata.normalize("NFKC", ch):
-            c = _canon_char(c)
-            if c.isspace():
-                if prev_ws:
-                    continue
-                out.append(" ")
+        c = _canon_char(ch)
+        if c.isspace():
+            if prev_ws:
+                continue
+            out.append(" ")
+            idx.append(i)
+            prev_ws = True
+        else:
+            for fc in c.casefold():
+                out.append(fc)
                 idx.append(i)
-                prev_ws = True
-            else:
-                for fc in c.casefold():
-                    out.append(fc)
-                    idx.append(i)
-                prev_ws = False
+            prev_ws = False
     return "".join(out), idx
 
 
-def resolve_anchor(anchor: str, document_text: str) -> AnchorResolution:
+def _fuzzy_locate(norm_src: str, na: str):
+    """Locate the TRUE source phrase in ``norm_src`` best matching ``na``.
+
+    Returns (start, end, score) in ``norm_src`` coordinates, or None. The span is
+    sized to the SOURCE phrase (first..last matching block within a slack-padded
+    window around the longest common block), NOT to ``len(na)`` — so an
+    insertion/deletion in the model's anchor never truncates or over-extends the
+    stored span mid-word.
+    """
+    lm = difflib.SequenceMatcher(None, norm_src, na, autojunk=False).find_longest_match(
+        0, len(norm_src), 0, len(na)
+    )
+    if lm.size == 0:
+        return None
+    # Pad the window so small indels don't clip the true phrase; trailing
+    # non-matching source is trimmed away by taking the last matching block.
+    trail = max(16, len(na) // 4)
+    lo = max(0, lm.a - lm.b - 4)
+    hi = min(len(norm_src), (lm.a - lm.b) + len(na) + trail)
+    local = norm_src[lo:hi]
+    blocks = [
+        b
+        for b in difflib.SequenceMatcher(None, local, na, autojunk=False).get_matching_blocks()
+        if b.size > 0
+    ]
+    if not blocks:
+        return None
+    start = lo + blocks[0].a
+    end = lo + blocks[-1].a + blocks[-1].size
+    score = difflib.SequenceMatcher(None, norm_src[start:end], na, autojunk=False).ratio()
+    return start, end, score
+
+
+def resolve_anchor(
+    anchor: str, document_text: str, norm_src: str | None = None, idx: list | None = None
+) -> AnchorResolution:
     """Locate ``anchor`` in ``document_text``, tolerating cosmetic model drift.
 
-    Fast path: exact verbatim substring (score 1.0). Else normalize both sides
-    and look for an exact normalized substring (score 1.0 — cosmetic drift only).
-    Else fuzzy-match; if similarity >= ``RESOLVE_THRESHOLD`` return the mapped
-    verbatim source span, otherwise return the raw anchor flagged unresolved.
-    """
-    pos = document_text.find(anchor)
-    if pos != -1:
-        return AnchorResolution(anchor, pos, pos + len(anchor), False, 1.0)
+    ``document_text`` and ``anchor`` are NFC-normalized up front so a decomposed
+    (NFD) source and a composed (NFC) anchor of the same text align. Returned
+    offsets index — and ``.text`` is a byte-exact substring of — the NFC form of
+    ``document_text``. Callers resolving many anchors against one document may
+    pass a precomputed ``norm_src``/``idx`` (from ``_normalize_with_map`` of the
+    NFC document) to avoid re-normalizing the whole document per anchor.
 
-    norm_src, idx = _normalize_with_map(document_text)
-    na, _ = _normalize_with_map(anchor)
+    Fast path: exact substring (1.0). Else exact normalized substring (1.0,
+    cosmetic drift). Else fuzzy-match; if score >= ``RESOLVE_THRESHOLD`` return
+    the true source span, otherwise the anchor flagged unresolved.
+    """
+    doc = unicodedata.normalize("NFC", document_text)
+    anchor_nfc = unicodedata.normalize("NFC", anchor)
+
+    pos = doc.find(anchor_nfc)
+    if pos != -1:
+        return AnchorResolution(anchor_nfc, pos, pos + len(anchor_nfc), False, 1.0)
+
+    if norm_src is None or idx is None:
+        norm_src, idx = _normalize_with_map(doc)
+    na, _ = _normalize_with_map(anchor_nfc)
     na = na.strip()
     if not na:
-        return AnchorResolution(anchor, None, None, True, 0.0)
+        return AnchorResolution(anchor_nfc, None, None, True, 0.0)
 
     p = norm_src.find(na)
     if p != -1:
         start, end = idx[p], idx[p + len(na) - 1] + 1
-        return AnchorResolution(document_text[start:end], start, end, False, 1.0)
+        return AnchorResolution(doc[start:end], start, end, False, 1.0)
 
-    matcher = difflib.SequenceMatcher(None, norm_src, na, autojunk=False)
-    block = matcher.find_longest_match(0, len(norm_src), 0, len(na))
-    if block.size == 0:
-        return AnchorResolution(anchor, None, None, True, 0.0)
-    win_start = max(0, block.a - block.b)
-    win_end = min(len(norm_src), win_start + len(na))
-    score = difflib.SequenceMatcher(
-        None, norm_src[win_start:win_end], na, autojunk=False
-    ).ratio()
+    span = _fuzzy_locate(norm_src, na)
+    if span is None:
+        return AnchorResolution(anchor_nfc, None, None, True, 0.0)
+    s, e, score = span
     if score >= RESOLVE_THRESHOLD:
-        start, end = idx[win_start], idx[win_end - 1] + 1
-        return AnchorResolution(
-            document_text[start:end], start, end, False, round(score, 4)
-        )
-    return AnchorResolution(anchor, None, None, True, round(score, 4))
+        start, end = idx[s], idx[e - 1] + 1
+        return AnchorResolution(doc[start:end], start, end, False, round(score, 4))
+    return AnchorResolution(anchor_nfc, None, None, True, round(score, 4))
 
 
 def claims_from_records(raw_claims, document_text: str) -> list[Claim]:
     """Validate + resolve a list of ``{"claim", "anchor"}`` records into Claims.
 
     The order of the returned records mirrors the input order — no sorting,
-    reordering, or deduping. Each anchor is resolved against ``document_text``.
+    reordering, or deduping. The document is NFC-normalized and folded ONCE, then
+    reused across all anchors (resolution is O(claims + doc), not O(claims x doc)).
 
     Raises:
         ClaimParseError: if the shape is wrong or any claim text / anchor is
@@ -296,6 +337,9 @@ def claims_from_records(raw_claims, document_text: str) -> list[Claim]:
     """
     if not isinstance(raw_claims, list):
         raise ClaimParseError('"claims" must be a list')
+
+    nfc_doc = unicodedata.normalize("NFC", document_text)
+    norm_src, idx = _normalize_with_map(nfc_doc)
 
     out: list[Claim] = []
     for i, item in enumerate(raw_claims):
@@ -307,7 +351,7 @@ def claims_from_records(raw_claims, document_text: str) -> list[Claim]:
             raise ClaimParseError(f"claim {i} has missing/empty claim text")
         if not isinstance(anchor, str) or not anchor.strip():
             raise ClaimParseError(f"claim {i} has missing/empty anchor")
-        res = resolve_anchor(anchor, document_text)
+        res = resolve_anchor(anchor, nfc_doc, norm_src, idx)
         out.append(
             Claim(
                 id=_claim_id(i),
@@ -319,44 +363,6 @@ def claims_from_records(raw_claims, document_text: str) -> list[Claim]:
             )
         )
     return out
-
-
-def _extract_json_object(payload: str) -> dict:
-    """Best-effort parse of a free-text model payload into a dict.
-
-    Defensive back-compat helper for the string path (:func:`parse_claims`). The
-    primary path (:func:`extract_claims`) uses structured tool output and never
-    routes through here. Strips a ```json ...``` fence or grabs the outermost
-    ``{...}`` before ``json.loads``.
-    """
-    text = payload.strip()
-    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-    if fenced:
-        text = fenced.group(1).strip()
-    else:
-        i, j = text.find("{"), text.rfind("}")
-        if i != -1 and j != -1 and j > i:
-            text = text[i : j + 1]
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as e:
-        raise ClaimParseError(f"response was not valid JSON: {e}") from e
-
-
-def parse_claims(payload: str, document_text: str) -> list[Claim]:
-    """Parse a free-text model ``payload`` into validated, resolved Claims.
-
-    Back-compat string entry point. Tolerates markdown fences / preamble; routes
-    through the same validation + anchor-resolution as the structured path.
-
-    Raises:
-        ClaimParseError: if the payload is not valid JSON of the expected shape,
-            or any claim text / anchor is missing or empty.
-    """
-    data = _extract_json_object(payload)
-    if not isinstance(data, dict) or "claims" not in data:
-        raise ClaimParseError('response JSON missing "claims" key')
-    return claims_from_records(data["claims"], document_text)
 
 
 def _tool_input(response) -> dict:
@@ -498,21 +504,36 @@ def _serialize(claims: list[Claim], source_hash: str | None = None) -> str:
     return json.dumps(envelope, indent=2, ensure_ascii=False)
 
 
+def _records_to_claims(data) -> list[Claim]:
+    """Reconstruct :class:`Claim` records from a parsed sidecar envelope/list.
+
+    Raises ClaimParseError (not KeyError) on a record missing a required field,
+    so callers can degrade cleanly. A record lacking offsets is coerced to
+    ``anchor_unresolved`` rather than deserializing as resolved-with-null-span
+    (which downstream would slice as ``document_text[None:None]`` — the whole
+    document).
+    """
+    raw = data[_CLAIMS_KEY] if isinstance(data, dict) else data
+    if not isinstance(raw, list):
+        raise ClaimParseError("sidecar has no claims list")
+    out: list[Claim] = []
+    for item in raw:
+        try:
+            cid, claim, anchor = item["id"], item["claim"], item["anchor"]
+        except (KeyError, TypeError) as e:
+            raise ClaimParseError(f"malformed sidecar record: {e!r}") from e
+        start = item.get("anchor_start")
+        end = item.get("anchor_end")
+        unresolved = (
+            bool(item.get("anchor_unresolved", False)) or start is None or end is None
+        )
+        out.append(Claim(cid, claim, anchor, start, end, unresolved))
+    return out
+
+
 def _deserialize(text: str) -> list[Claim]:
     """Reconstruct :class:`Claim` records from serialized sidecar ``text``."""
-    data = json.loads(text)
-    raw = data[_CLAIMS_KEY] if isinstance(data, dict) else data
-    return [
-        Claim(
-            id=item["id"],
-            claim=item["claim"],
-            anchor=item["anchor"],
-            anchor_start=item.get("anchor_start"),
-            anchor_end=item.get("anchor_end"),
-            anchor_unresolved=item.get("anchor_unresolved", False),
-        )
-        for item in raw
-    ]
+    return _records_to_claims(json.loads(text))
 
 
 def write_claims(
@@ -521,13 +542,16 @@ def write_claims(
     """Persist ``claims`` to the ``{doc_id}.claims.json`` sidecar; return its path.
 
     Writes human-readable, indented JSON next to the document, mirroring
-    documents._summary_path/save_upload's sidecar write. Creates
-    ``DOCUMENTS_DIR`` if needed. Pass ``source_hash`` to stamp the sidecar with
-    the hash of the document the claims were generated from (cache integrity).
+    documents._summary_path/save_upload's sidecar write. Creates ``DOCUMENTS_DIR``
+    if needed. The write is ATOMIC (temp file + os.replace) so an interrupted
+    write never leaves a half-written sidecar that would poison the cache. Pass
+    ``source_hash`` to stamp the sidecar with the hash of the source document.
     """
     path = _claims_path(doc_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_serialize(claims, source_hash))
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(_serialize(claims, source_hash), encoding="utf-8")
+    os.replace(tmp, path)  # atomic on the same filesystem
     return path
 
 
@@ -536,19 +560,23 @@ def load_claims(doc_id: str) -> list[Claim] | None:
     path = _claims_path(doc_id)
     if not path.exists():
         return None
-    return _deserialize(path.read_text())
+    return _deserialize(path.read_text(encoding="utf-8"))
 
 
 def _cached_source_hash(doc_id: str) -> str | None:
     """Return the ``source_hash`` stamped on ``doc_id``'s sidecar, or None.
 
-    None both when no sidecar exists and when a sidecar predates hashing (no
-    stamp) — either way the cache cannot be verified, so callers regenerate.
+    None when no sidecar exists, when a sidecar predates hashing (no stamp), or
+    when the sidecar is unreadable/corrupt — in every case the cache cannot be
+    verified, so callers regenerate rather than crash.
     """
     path = _claims_path(doc_id)
     if not path.exists():
         return None
-    data = json.loads(path.read_text())
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
     return data.get(_HASH_KEY) if isinstance(data, dict) else None
 
 
@@ -557,16 +585,20 @@ def generate_claims(doc_id: str, document_text: str) -> list[Claim]:
 
     Cache integrity is keyed on the document's content hash: the sidecar is
     reused (NO LLM call) only when its stamped ``source_hash`` matches the hash
-    of ``document_text``. If the sidecar is absent OR its hash disagrees with the
-    current text (the served document drifted since the rubric was cached), the
-    (mocked-in-tests) LLM decomposition re-runs and the sidecar is rewritten with
-    the fresh hash. The return type is identical on both paths: ``list[Claim]``.
+    of ``document_text``. If the sidecar is absent, its hash disagrees with the
+    current text (the served document drifted since the rubric was cached), OR it
+    is corrupt/unreadable, the (mocked-in-tests) LLM decomposition re-runs and the
+    sidecar is rewritten. The return type is identical on both paths: ``list[Claim]``.
     """
     current_hash = _hash_source(document_text)
-    if _cached_source_hash(doc_id) == current_hash:
-        cached = load_claims(doc_id)
-        if cached is not None:
-            return cached
+    path = _claims_path(doc_id)
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and data.get(_HASH_KEY) == current_hash:
+                return _records_to_claims(data)  # cache hit — single read
+        except (ValueError, OSError, ClaimParseError):
+            pass  # corrupt / unreadable / malformed -> regenerate
     claims = extract_claims(document_text)
     write_claims(doc_id, claims, source_hash=current_hash)
     return claims
