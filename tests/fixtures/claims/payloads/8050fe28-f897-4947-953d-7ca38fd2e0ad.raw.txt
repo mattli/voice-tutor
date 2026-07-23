@@ -1,0 +1,106 @@
+```json
+{
+  "claims": [
+    {
+      "claim": "Voice Tutor should score the user's articulation against the source, claim by claim, and use that score to steer the conversation, not just report on it.",
+      "anchor": "The core idea: **score the user's articulation against the source, claim by claim** — and use that score to steer the conversation, not just report on it."
+    },
+    {
+      "claim": "The originating problem was the gap between being able to recognize information when reading it versus being able to produce or explain it from memory without a source.",
+      "anchor": "I save a lot of AI articles I never read, compile a wiki, learn things "here and there" — but any time I try to *describe* what I know, I hit gaps and uncertainty."
+    },
+    {
+      "claim": "Recognition knowledge is built by reading, but production knowledge—the ability to generate explanations cold and in order—only comes from explaining out loud.",
+      "anchor": "That feeling is the gap between *recognition* (reading something and thinking "yes, I know this") and *production* (generating it cold, in order, with no source in front of you). Reading builds recognition. Only explaining builds production."
+    },
+    {
+      "claim": "Voice Tutor's evaluator could work like dev-harness's evaluator, which scores generated code against a negotiated contract, but instead score spoken explanations against grounded source material.",
+      "anchor": "dev-harness already has an evaluator that scores generated code against a negotiated contract. What if the Voice Tutor artifact scored *the user's spoken explanation* against the grounded source? Same shape: an evaluator scoring a production against a fixed reference."
+    },
+    {
+      "claim": "Learning is a rare domain where assessment can become deterministic because you can judge whether an explanation matches a fixed reference document, unlike judging whether an essay is good.",
+      "anchor": "Most AI products can't guarantee an outcome because the core is nondeterministic. Learning is a rare domain where a fixed reference is *handed to you* — you can't deterministically judge "is this essay good," but you can judge "does this explanation match this paragraph.""
+    },
+    {
+      "claim": "Grounded assessment at the claim level, rather than a 1-5 score, provides binary, actionable feedback such as identifying when the user asserted something contradictory or never mentioned a key dependency.",
+      "anchor": "**Not a score.** Per the evals principle already in the wiki ([[ai-evals]]): 1–5 scales create false precision and aren't actionable. "You scored 7/10 on your explanation" has the same problem. The deterministic artifact is a **claim-level checklist** — you asserted X, source says not-X; you never mentioned Y, which the argument depends on. Binary, grounded, actionable."
+    },
+    {
+      "claim": "Claim-level grounded assessment could be a primitive shared by both WikiTutor and Voice Tutor, making the grounding source a configuration difference rather than a product difference.",
+      "anchor": "Claim-level grounded assessment needs only two things: a fixed reference, and a user production to score against it. Both WikiTutor and Voice Tutor have both.\n\n→ Open reframe: maybe the grounding source (one uploaded doc vs. compiled wiki) is a **config difference, not a product difference** — and the real product is the grounded-assessment engine, with WikiTutor and Voice Tutor as two front-ends over the same core."
+    },
+    {
+      "claim": "Short documents reduce cached context costs and provide tighter ground truth for scoring, with cost and quality pointing in the same direction.",
+      "anchor": "Short reference → small cached context (the single biggest proven cost lever: $21/hr → $6.70/hr came from slimming cached context) **and** tighter ground truth for scoring. Cost and quality point the same direction, which almost never happens."
+    },
+    {
+      "claim": "Short documents change the user's goal from getting through material to being able to articulate something specific, making voice output the actual point rather than just a nice modality.",
+      "anchor": "But shorter doesn't just shrink the input — it **changes the job**:\n\n| | 50-page chapter | Short doc / wiki entry / one case |\n|---|---|---|\n| User is trying to | **get through** material | be able to **say** something |\n| Voice is | a nice modality | the actual point (output *is* speech) |"
+    },
+    {
+      "claim": "The reframed target user is someone who must articulate on demand against a bounded source under stakes, such as law students facing cold calls, med students being pimped on rounds, or people preparing for interviews.",
+      "anchor": "People who must articulate on demand, against a bounded source, under stakes:\n\n- Law students facing cold calls (one case, state the holding out loud tomorrow)\n- Med students getting pimped on rounds (one mechanism, spoken, under pressure)\n- Oral exams, defenses, vivas\n- **Interview prep — literally me, right now, with my wiki**\n- Teaching prep (can't lecture from recognition knowledge)"
+    },
+    {
+      "claim": "The live claim-level score should steer the conversation by telling the agent what to ask next and showing the user where they stand, rather than just reporting a final assessment.",
+      "anchor": "What unifies them: **the score steers the conversation rather than just reporting on it.**\n\n- Reference doc decomposes into a set of claims up front\n- Each claim gets marked hit / missed / contradicted as you talk\n- Agent reads that live state and steers toward what's uncovered or shaky\n- Same signal, two uses: tells the agent what to ask next, tells you where you stand"
+    },
+    {
+      "claim": "Input coverage measures what the user has heard explained (recognition), while output coverage measures what they can articulate back (production), and the gap between them quantifies the 'I know this until I try to describe it' feeling.",
+      "anchor": "Two distinct measurements:\n\n- **Input coverage** — what you've heard the agent explain from the document (*recognition*)\n- **Output coverage** — what you've been able to articulate back (*production*)\n\n**The gap between them is the "I know this until I try to describe it" feeling, quantified.**"
+    },
+    {
+      "claim": "Tracking the timing of who said what distinguishes repeating back from retained knowledge, making the output score trustworthy rather than gameable.",
+      "anchor": "Timing matters for honest scoring. Articulating something explained 30 seconds ago ≠ articulating it a week later cold. Tracking who-said-what-when distinguishes "repeated back" from "retained," which is what makes the output score trustworthy rather than gameable."
+    },
+    {
+      "claim": "Coverage state should persist across sessions as a property of the document, allowing users to return over days or weeks and have the system re-probe previously articulated claims.",
+      "anchor": "Coverage is a property of the *document*, not the session. Come back over days or weeks; the state persists. (Consistent with WikiTutor's per-document journey / "pick up where you left off" decision.) Returning sessions get a job: re-probe things articulated well last week to check they stuck."
+    },
+    {
+      "claim": "An unresolved tension is that steering only on coverage could create a passive checklist walk, whereas the productive struggle at the edge of competence is where learning happens.",
+      "anchor": "**Steering pressure vs. productive struggle.** The gap-feeling is where learning happens. An agent that redirects too eagerly smooths it away → passive consumption with extra steps. How long does it let you flounder?"
+    },
+    {
+      "claim": "A learning evaluator needs to be diagnostic rather than adversarial, unlike dev-harness's evaluator which tries to break the output, though it's unclear whether harsh precision helps or hurts a serious learner.",
+      "anchor": "**Two evaluators, different bedside manner.** dev-harness's evaluator is *adversarial* — it tries to break the output. A learning evaluator scoring a person needs to be *diagnostic*. Same machinery, opposite posture. Open question: does the harshness that makes a good code critic make a bad tutor, or is "here's precisely what you got wrong" exactly what a serious learner wants?"
+    },
+    {
+      "claim": "The hard engineering work—extracting claims from arbitrary documents, matching spoken language to them, and distinguishing wrong from differently phrased—is likely to be underestimated.",
+      "anchor": "**The hard engineering core:** extracting claims reliably from arbitrary documents, matching spoken language to them, distinguishing "wrong" from "phrased differently." This is the part most likely to be underestimated — and the part that would reveal whether the elegance survives implementation."
+    },
+    {
+      "claim": "The rehearsal-before-performance positioning is not yet validated, though adjacent evidence from lecturing-to-walls behavior is strong; it remains a hypothesis that requires cheap testing with existing power users.",
+      "anchor": "**The positioning is a hypothesis, not validated.** The 2026-04-26 Reddit research validated *study companion* (PDF paralysis, no listener, re-reading without absorbing). It did not validate *rehearsal-before-performance*. Adjacent evidence is strong — the lecturing-to-walls / fake-listener finding is exactly this behavior — but "law students want cold-call rehearsal" is currently a bet. Cheapest test: one question to the three power-users already DM'd."
+    },
+    {
+      "claim": "Per-session costs are measured accurately from real telemetry after refactoring in April 2026, but the hardcoded vendor rates and the $6.70/hr headline are stale and need reverification.",
+      "anchor": "**Per-session costs are ground truth, not estimates.** Telemetry was refactored 2026-04-15 to measure actual TTS audio bytes and real token counts. That pass caught a 4× TTS overestimate (`CHARS_PER_SEC_TTS=14` vs. Cartesia's actual ~55 chars/sec) and fixed it at source.\n- **What IS stale:** hardcoded rates in `bot.py:40-49` last verified 2026-04-22 (~3 months). The `~$6.70/hr` headline is a derived aggregate from that date, not a recomputation from recent sessions."
+    },
+    {
+      "claim": "Selling bounded sessions rather than metered hours converts an open-ended pricing problem into a deliverable with a known maximum cost, making it possible to price a study session at around $3.",
+      "anchor": "Converts the worst pricing problem (open-ended meter on a ~$7/hr pipeline) into a bounded unit with a known max cost. You can price a session because you know its ceiling.\n\nAlso changes the value story: *"one study session, $3"* reads completely differently from *"3 hours of voice time, $40"* — the artifact (recap + claim-level scoring) makes it a **deliverable** rather than metered usage."
+    },
+    {
+      "claim": "Document length is not constrained by context window size but by live session costs from cached context re-reads, with a practical limit around 30-50K tokens.",
+      "anchor": "- **Context window is not the constraint.** ~200K tokens ≈ 500 pages. Target docs are 10–30K.\n- **Live session is the constraint, and it's cost not capability.** Doc sits in cached context, re-read every turn; cache writes at $3.75/MTok on 5-min TTL expiry. Practical live limit ~30–50K tokens."
+    },
+    {
+      "claim": "Post-session scoring can use cheaper batch inference and only needs to operate on the passages actually discussed, making it both cheaper and more accurate than scoring against the whole document.",
+      "anchor": "**Scoring is a different regime.** Post-session batch, no latency pressure, can use Haiku (5× cheaper). And it does **not** need the whole doc — score against the passages actually discussed. Cheaper *and* more accurate."
+    },
+    {
+      "claim": "Bring-your-own-keys is a dead-end approach because requiring three API keys creates configuration friction that the validated WikiTutor user won't clear, necessitating managed keys with metering and cost caps.",
+      "anchor": "**The key-holding fork:** BYOK is dead on arrival — three API keys is a wall only the most technical users clear, and it's the exact configuration friction already ruled a dead end for the validated user in WikiTutor (see [[byok-exploration]]). → **Managed keys**, which is *why* metering and caps become load-bearing rather than bureaucratic."
+    },
+    {
+      "claim": "Making the product available to strangers requires public reachability with proper WebRTC hosting, accounts with per-user isolation using Supabase magic-link and RLS patterns, and non-optional per-user cost caps.",
+      "anchor": "**Strangers on the internet (the real bar):**\n- Public reachability — WebRTC is stateful/heavy; needs a real VM/container host + STUN/TURN, not Vercel\n- Accounts + per-user isolation — **lift WikiTutor's Supabase magic-link + RLS pattern wholesale, don't rebuild**\n- Move state off local filesystem (`~/.voice-tutor/`) into multi-tenant store\n- **Per-user cost caps — non-optional** at ~$7/hr marginal"
+    },
+    {
+      "claim": "The cheapest high-signal next steps are to personally test it with one wiki entry spoken out loud, ask one question to three existing power users about rehearsal use cases, and get focused cost-reduction advice from a recent contact.",
+      "anchor": "**Cheap and high-signal:**\n- [ ] Use it: one wiki entry, spoken, out loud. Closest available user for the short-source rehearsal case.\n- [ ] One question to the three DM'd power-users (u/MyDogNewt, u/just_premed_memes, u/gazeintotheiris) testing the rehearsal-before-performance hypothesis\n- [ ] Cost conversation with the contact from last week — send real telemetry + one bounded question: *"Voice pipeline, ~$7/hr marginal, STT/LLM/TTS breakdown attached. Where would you attack this first?"*"
+    }
+  ]
+}
+```
