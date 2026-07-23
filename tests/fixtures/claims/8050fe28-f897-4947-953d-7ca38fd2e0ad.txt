@@ -1,0 +1,166 @@
+---
+title: Voice Tutor — Grounded Assessment (brainstorm)
+date: 2026-07-18
+status: exploration — not decided
+source: Claude.ai session, July 17–18 2026
+---
+
+# Voice Tutor — Grounded Assessment
+
+> Generative session. Nothing here is decided. Captured so it's not lost.
+> The core idea: **score the user's articulation against the source, claim by claim** — and use that score to steer the conversation, not just report on it.
+
+---
+
+## How we got here (the thread that matters)
+
+The idea didn't start as a product idea. It started as a personal problem.
+
+1. **The felt problem.** I save a lot of AI articles I never read, compile a wiki, learn things "here and there" — but any time I try to *describe* what I know, I hit gaps and uncertainty.
+2. **The diagnosis.** That feeling is the gap between *recognition* (reading something and thinking "yes, I know this") and *production* (generating it cold, in order, with no source in front of you). Reading builds recognition. Only explaining builds production. The unsure feeling shows up at the edge of competence, not far from it — it's a map, not a verdict.
+3. **The fix isn't more input.** It's articulating out loud against grounded material, hitting the gap, patching that one spot, repeating. Which is a description of Voice Tutor.
+4. **The leap.** dev-harness already has an evaluator that scores generated code against a negotiated contract. What if the Voice Tutor artifact scored *the user's spoken explanation* against the grounded source? Same shape: an evaluator scoring a production against a fixed reference.
+5. **Why that matters beyond a feature.** Most AI products can't guarantee an outcome because the core is nondeterministic. Learning is a rare domain where a fixed reference is *handed to you* — you can't deterministically judge "is this essay good," but you can judge "does this explanation match this paragraph." The conversation stays nondeterministic; the *assessment* becomes deterministic. That's what makes a guarantee possible.
+
+---
+
+## The core bet
+
+**Grounded assessment as the deterministic core.**
+
+- Voice conversation = the acquisition surface
+- Claim-level checklist = the guarantee
+- The reference document = what makes the guarantee possible
+
+Reframes Voice Tutor from *"ChatGPT voice mode bound to a doc"* (a positioning) to *"the thing that can tell you whether you actually understand it"* (a defensible outcome).
+
+**Not a score.** Per the evals principle already in the wiki ([[ai-evals]]): 1–5 scales create false precision and aren't actionable. "You scored 7/10 on your explanation" has the same problem. The deterministic artifact is a **claim-level checklist** — you asserted X, source says not-X; you never mentioned Y, which the argument depends on. Binary, grounded, actionable.
+
+---
+
+## Key design moves
+
+### 1. It's a primitive, not a feature
+
+Claim-level grounded assessment needs only two things: a fixed reference, and a user production to score against it. Both WikiTutor and Voice Tutor have both.
+
+→ Open reframe: maybe the grounding source (one uploaded doc vs. compiled wiki) is a **config difference, not a product difference** — and the real product is the grounded-assessment engine, with WikiTutor and Voice Tutor as two front-ends over the same core. *Not resolved. Worth sitting with.*
+
+### 2. Short documents are the shape, not a compromise
+
+Short reference → small cached context (the single biggest proven cost lever: $21/hr → $6.70/hr came from slimming cached context) **and** tighter ground truth for scoring. Cost and quality point the same direction, which almost never happens.
+
+But shorter doesn't just shrink the input — it **changes the job**:
+
+| | 50-page chapter | Short doc / wiki entry / one case |
+|---|---|---|
+| User is trying to | **get through** material | be able to **say** something |
+| Voice is | a nice modality | the actual point (output *is* speech) |
+
+### 3. The reframed user: rehearsal against a reference
+
+People who must articulate on demand, against a bounded source, under stakes:
+
+- Law students facing cold calls (one case, state the holding out loud tomorrow)
+- Med students getting pimped on rounds (one mechanism, spoken, under pressure)
+- Oral exams, defenses, vivas
+- **Interview prep — literally me, right now, with my wiki**
+- Teaching prep (can't lecture from recognition knowledge)
+
+Through-line: all are *rehearsal against a reference*, all naturally short-source — the unit is "the thing I have to be able to explain," not "the material I have to cover."
+
+**This may be a sharper version of the validated student user, not a different one.** Same people, different moment: not "help me read this," but "check whether I can say this."
+
+### 4. One mode, not two — coverage as the steering mechanism
+
+Voice-to-text and back-and-forth conversation shouldn't be separate modes. What unifies them: **the score steers the conversation rather than just reporting on it.**
+
+- Reference doc decomposes into a set of claims up front
+- Each claim gets marked hit / missed / contradicted as you talk
+- Agent reads that live state and steers toward what's uncovered or shaky
+- Same signal, two uses: tells the agent what to ask next, tells you where you stand
+
+### 5. Input vs. output coverage — *the strongest idea in the session*
+
+Two distinct measurements:
+
+- **Input coverage** — what you've heard the agent explain from the document (*recognition*)
+- **Output coverage** — what you've been able to articulate back (*production*)
+
+**The gap between them is the "I know this until I try to describe it" feeling, quantified.** No study tool measures this, because most only produce input and then quiz for recall.
+
+Consequences:
+- Weight them differently. Input coverage is cheap and fast; output coverage is slow and is where the value is. The interesting metric is the **delta**, not the sum.
+- Timing matters for honest scoring. Articulating something explained 30 seconds ago ≠ articulating it a week later cold. Tracking who-said-what-when distinguishes "repeated back" from "retained," which is what makes the output score trustworthy rather than gameable.
+
+### 6. Progress persists across sessions
+
+Coverage is a property of the *document*, not the session. Come back over days or weeks; the state persists. (Consistent with WikiTutor's per-document journey / "pick up where you left off" decision.) Returning sessions get a job: re-probe things articulated well last week to check they stuck.
+
+---
+
+## Open tensions (unresolved, deliberately)
+
+- **Coverage is the easy half; correctness is the interesting half.** "Did you touch this claim" is cheap. "Did you get it right" is the hard judgment and the valuable one. Steering only on coverage → a checklist walk. Needs to weight toward things touched-but-wrong, not just skipped.
+- **Steering pressure vs. productive struggle.** The gap-feeling is where learning happens. An agent that redirects too eagerly smooths it away → passive consumption with extra steps. How long does it let you flounder?
+- **Two evaluators, different bedside manner.** dev-harness's evaluator is *adversarial* — it tries to break the output. A learning evaluator scoring a person needs to be *diagnostic*. Same machinery, opposite posture. Open question: does the harshness that makes a good code critic make a bad tutor, or is "here's precisely what you got wrong" exactly what a serious learner wants?
+- **The hard engineering core:** extracting claims reliably from arbitrary documents, matching spoken language to them, distinguishing "wrong" from "phrased differently." This is the part most likely to be underestimated — and the part that would reveal whether the elegance survives implementation.
+- **The positioning is a hypothesis, not validated.** The 2026-04-26 Reddit research validated *study companion* (PDF paralysis, no listener, re-reading without absorbing). It did not validate *rehearsal-before-performance*. Adjacent evidence is strong — the lecturing-to-walls / fake-listener finding is exactly this behavior — but "law students want cold-call rehearsal" is currently a bet. Cheapest test: one question to the three power-users already DM'd.
+
+---
+
+## Costs & productization (same session, adjacent thread)
+
+### Cost accuracy — what's actually stale
+
+- **Per-session costs are ground truth, not estimates.** Telemetry was refactored 2026-04-15 to measure actual TTS audio bytes and real token counts. That pass caught a 4× TTS overestimate (`CHARS_PER_SEC_TTS=14` vs. Cartesia's actual ~55 chars/sec) and fixed it at source.
+- **What IS stale:** hardcoded rates in `bot.py:40-49` last verified 2026-04-22 (~3 months). The `~$6.70/hr` headline is a derived aggregate from that date, not a recomputation from recent sessions.
+- **Sanity check suggests it's low:** 2026-04-27 → 33.4 min / $4.60 ≈ **$8.25/hr**. 2026-06-01 → 11.5 min / $1.52 ≈ **$7.95/hr**. Both above the $6.70 headline.
+- **Task:** re-verify vendor rates, then recompute $/hr from actual recent sessions.
+
+### Selling sessions, not hours
+
+Converts the worst pricing problem (open-ended meter on a ~$7/hr pipeline) into a bounded unit with a known max cost. You can price a session because you know its ceiling.
+
+Also changes the value story: *"one study session, $3"* reads completely differently from *"3 hours of voice time, $40"* — the artifact (recap + claim-level scoring) makes it a **deliverable** rather than metered usage.
+
+Rough shape if subscription: ~$40/mo including ~3 hrs → ~50% gross margin at current costs; overage $10–15/hr; free trial = 20–30 min total, not a time-boxed unlimited window. At $3/hr cost the same tier hits ~75% margin — the difference between viable indie product and treadmill.
+
+### Document length limits
+
+- **Context window is not the constraint.** ~200K tokens ≈ 500 pages. Target docs are 10–30K.
+- **Live session is the constraint, and it's cost not capability.** Doc sits in cached context, re-read every turn; cache writes at $3.75/MTok on 5-min TTL expiry. Practical live limit ~30–50K tokens.
+- **Scoring is a different regime.** Post-session batch, no latency pressure, can use Haiku (5× cheaper). And it does **not** need the whole doc — score against the passages actually discussed. Cheaper *and* more accurate.
+- Practical: cap uploads ~50 pages; scope scoring to discussed passages.
+
+### What "someone else could use it" actually requires
+
+Two very different bars:
+
+**Trusted single tester (available now):** own keys, gated access, Tailscale invite. Skip hosting, billing, privacy policy.
+
+**Strangers on the internet (the real bar):**
+- Public reachability — WebRTC is stateful/heavy; needs a real VM/container host + STUN/TURN, not Vercel
+- Accounts + per-user isolation — **lift WikiTutor's Supabase magic-link + RLS pattern wholesale, don't rebuild**
+- Move state off local filesystem (`~/.voice-tutor/`) into multi-tenant store
+- **Per-user cost caps — non-optional** at ~$7/hr marginal
+- Data lifecycle: store transcripts, not raw audio. The safest data is data you never keep.
+
+**The key-holding fork:** BYOK is dead on arrival — three API keys is a wall only the most technical users clear, and it's the exact configuration friction already ruled a dead end for the validated user in WikiTutor (see [[byok-exploration]]). → **Managed keys**, which is *why* metering and caps become load-bearing rather than bureaucratic. One decision cascades into the whole list.
+
+---
+
+## Next moves
+
+**Near-term:**
+- [ ] Re-verify vendor rates; recompute $/hr from recent real sessions (not the April aggregate)
+
+**Cheap and high-signal:**
+- [ ] Use it: one wiki entry, spoken, out loud. Closest available user for the short-source rehearsal case.
+- [ ] One question to the three DM'd power-users (u/MyDogNewt, u/just_premed_memes, u/gazeintotheiris) testing the rehearsal-before-performance hypothesis
+- [ ] Cost conversation with the contact from last week — send real telemetry + one bounded question: *"Voice pipeline, ~$7/hr marginal, STT/LLM/TTS breakdown attached. Where would you attack this first?"* (Not the first step — the gating unknown is whether anyone reaches for this — but cheap, and voice is the rare case where cost math is a genuine go/no-go input.)
+
+**Not yet:**
+- Building the claim-decomposition layer
+- Multi-tenant / hosting work
+- Any pricing commitment
