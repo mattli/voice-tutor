@@ -26,6 +26,12 @@ Robustness against real model output (learned from a credentialed smoke run):
     document — which downstream scoring depends on. An anchor that cannot be
     resolved above :data:`RESOLVE_THRESHOLD` is KEPT and flagged
     ``anchor_unresolved`` rather than discarded.
+
+Offset contract for scoring: the document is canonicalized to Unicode NFC before
+resolution, so ``anchor_start``/``anchor_end`` index the NFC form, and the stored
+``anchor`` text is byte-exact against it. Consumers should prefer the ``anchor``
+text; if slicing by offset, slice ``unicodedata.normalize("NFC", document_text)``.
+See :class:`Claim` for the full contract.
 """
 
 import difflib
@@ -153,15 +159,25 @@ class ClaimExtractionTruncated(ClaimParseError):
 class Claim:
     """A single assessable claim decomposed from a document.
 
+    CONTRACT FOR SCORING / DOWNSTREAM CONSUMERS:
+        ``anchor`` (the supporting-passage TEXT) is the authoritative, byte-exact
+        evidence — PREFER IT. ``anchor_start``/``anchor_end`` are offsets into the
+        NFC-NORMALIZED form of the source document (``unicodedata.normalize("NFC",
+        document_text)``), NOT the raw bytes. For the common case (already-NFC
+        text) they equal raw offsets; for a decomposed (NFD) source they do not.
+        A consumer that slices by offset MUST slice the NFC form
+        (``nfc_doc[anchor_start:anchor_end] == anchor``); a consumer that just
+        needs the passage should use ``anchor`` directly and ignore the offsets.
+
     Attributes:
         id: Stable, purely positional id (``c1``, ``c2``, ...).
         claim: The claim text, a standalone assertion.
         anchor: The supporting passage. When resolved, this is the VERBATIM
-            source substring at ``[anchor_start, anchor_end)`` — byte-exact
-            against the document. When unresolved, it is the model's raw
-            best-effort anchor (kept for reference, not a source substring).
-        anchor_start: Start char offset of the anchor in the source, or None.
-        anchor_end: End char offset (exclusive) of the anchor, or None.
+            source substring at ``[anchor_start, anchor_end)`` of the NFC document
+            — byte-exact. When unresolved, it is the model's raw best-effort
+            anchor (kept for reference, not a source substring).
+        anchor_start: Start char offset of the anchor in the NFC document, or None.
+        anchor_end: End char offset (exclusive) in the NFC document, or None.
         anchor_unresolved: True if the anchor could not be located in the source
             above ``RESOLVE_THRESHOLD``; the claim is kept regardless.
     """
@@ -245,22 +261,52 @@ def _normalize_with_map(s: str):
     return "".join(out), idx
 
 
+def _trim_isolated_edges(blocks: list):
+    """Drop leading/trailing matching blocks reachable only across a gap larger
+    than the block itself.
+
+    A short edge match separated from the core by a big gap is almost always
+    coincidental — e.g. a typo's trailing character matching the first letter of
+    the NEXT sentence. Left in, it stretches the span past the true phrase
+    boundary (the mirror of the mid-word-truncation bug). Interior gaps (a
+    dropped/added word inside the phrase) are preserved: only the ENDS are
+    trimmed, and only when the edge block is no larger than the gap crossed.
+    """
+    blocks = list(blocks)
+    while len(blocks) > 1:
+        prev, last = blocks[-2], blocks[-1]
+        gap = max(last.a - (prev.a + prev.size), last.b - (prev.b + prev.size))
+        if last.size <= gap:
+            blocks.pop()
+        else:
+            break
+    while len(blocks) > 1:
+        first, nxt = blocks[0], blocks[1]
+        gap = max(nxt.a - (first.a + first.size), nxt.b - (first.b + first.size))
+        if first.size <= gap:
+            blocks.pop(0)
+        else:
+            break
+    return blocks
+
+
 def _fuzzy_locate(norm_src: str, na: str):
     """Locate the TRUE source phrase in ``norm_src`` best matching ``na``.
 
     Returns (start, end, score) in ``norm_src`` coordinates, or None. The span is
-    sized to the SOURCE phrase (first..last matching block within a slack-padded
-    window around the longest common block), NOT to ``len(na)`` — so an
-    insertion/deletion in the model's anchor never truncates or over-extends the
-    stored span mid-word.
+    sized to the SOURCE phrase — the first..last matching block within a
+    slack-padded window around the longest common block, AFTER trimming isolated
+    coincidental edge matches — NOT to ``len(na)``. So an insertion/deletion in
+    the model's anchor never truncates the stored span mid-word (short side) nor
+    stretches it across a sentence boundary (long side).
     """
     lm = difflib.SequenceMatcher(None, norm_src, na, autojunk=False).find_longest_match(
         0, len(norm_src), 0, len(na)
     )
     if lm.size == 0:
         return None
-    # Pad the window so small indels don't clip the true phrase; trailing
-    # non-matching source is trimmed away by taking the last matching block.
+    # Pad the window so small indels don't clip the true phrase; spurious edge
+    # matches are then trimmed by _trim_isolated_edges.
     trail = max(16, len(na) // 4)
     lo = max(0, lm.a - lm.b - 4)
     hi = min(len(norm_src), (lm.a - lm.b) + len(na) + trail)
@@ -272,6 +318,7 @@ def _fuzzy_locate(norm_src: str, na: str):
     ]
     if not blocks:
         return None
+    blocks = _trim_isolated_edges(blocks)
     start = lo + blocks[0].a
     end = lo + blocks[-1].a + blocks[-1].size
     score = difflib.SequenceMatcher(None, norm_src[start:end], na, autojunk=False).ratio()
@@ -293,16 +340,22 @@ def resolve_anchor(
     Fast path: exact substring (1.0). Else exact normalized substring (1.0,
     cosmetic drift). Else fuzzy-match; if score >= ``RESOLVE_THRESHOLD`` return
     the true source span, otherwise the anchor flagged unresolved.
+
+    When ``norm_src``/``idx`` are supplied the caller guarantees ``document_text``
+    is ALREADY NFC (see :func:`claims_from_records`), so the whole-document NFC
+    pass is skipped — resolution stays O(claims + doc), not O(claims x doc).
     """
-    doc = unicodedata.normalize("NFC", document_text)
     anchor_nfc = unicodedata.normalize("NFC", anchor)
+    if norm_src is None or idx is None:
+        doc = unicodedata.normalize("NFC", document_text)
+        norm_src, idx = _normalize_with_map(doc)
+    else:
+        doc = document_text  # caller guarantees this is already NFC
 
     pos = doc.find(anchor_nfc)
     if pos != -1:
         return AnchorResolution(anchor_nfc, pos, pos + len(anchor_nfc), False, 1.0)
 
-    if norm_src is None or idx is None:
-        norm_src, idx = _normalize_with_map(doc)
     na, _ = _normalize_with_map(anchor_nfc)
     na = na.strip()
     if not na:

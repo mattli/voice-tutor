@@ -424,6 +424,28 @@ def test_fuzzy_anchor_stores_true_source_span_not_model_length_slice():
     assert doc[res2.start : res2.end] == res2.text
 
 
+def test_fuzzy_anchor_does_not_bleed_past_true_phrase_boundary():
+    # MIRROR of the chop bug (this layer's bugs come in inverse pairs): a stray
+    # trailing char in the anchor whose match coincides with the start of the
+    # NEXT sentence must NOT stretch the stored span across the boundary.
+    doc = "Photosynthesis converts light. The leaf absorbs energy."
+    res = claims.resolve_anchor("Photosynthesis converts lightt", doc)  # dup trailing t
+    assert res.unresolved is False
+    assert res.text == "Photosynthesis converts light", f"span bled: {res.text!r}"
+    assert doc[res.start : res.end] == res.text
+    assert "The" not in res.text and ". " not in res.text  # no bleed into next sentence
+
+    # Mirror on the leading side: a stray leading char must not drag the span back.
+    doc2 = "The leaf is green. Photosynthesis converts light."
+    res2 = claims.resolve_anchor("hotosynthesis converts light", doc2)  # dropped leading P
+    assert res2.unresolved is False
+    assert res2.text.endswith("Photosynthesis converts light") or res2.text.endswith(
+        "hotosynthesis converts light"
+    ), f"leading span mis-sized: {res2.text!r}"
+    assert doc2[res2.start : res2.end] == res2.text
+    assert "green" not in res2.text  # no bleed back into the previous sentence
+
+
 def test_nfd_source_nfc_anchor_resolves_to_full_span():
     # Finding #2: a decomposed (NFD) source and a composed (NFC) anchor of the
     # SAME text must align — no dropped leading/trailing letter, not unresolved.
