@@ -6,7 +6,7 @@ in a fresh worktree with no local .venv, so ALL hermetic tests for this work
 live in THIS single file.
 
 Determinism strategy: the Anthropic LLM call is MOCKED. ``claims.extract_claims``
-constructs ``anthropic.Anthropic()`` lazily and calls ``client.messages.create``
+constructs ``anthropic.Anthropic()`` lazily and calls ``client.messages.stream``
 with a FORCED tool call; tests patch ``anthropic.Anthropic`` so the real network
 client is never constructed and the mocked response carries a ``tool_use`` block
 whose ``.input`` is the ``{"claims": [...]}`` dict. The suite passes with no
@@ -67,10 +67,10 @@ def _records(pairs):
     return [{"claim": c, "anchor": a} for c, a in pairs]
 
 
-def _tool_response(records):
-    """Build an Anthropic SDK-shaped response carrying a forced record_claims call.
+def _tool_message(records, stop_reason="tool_use"):
+    """Build an Anthropic SDK-shaped final message carrying a record_claims call.
 
-    Mirrors the real shape: response.content holds a ``tool_use`` block whose
+    Mirrors the real shape: message.content holds a ``tool_use`` block whose
     ``.input`` is the parsed ``{"claims": [...]}`` dict.
     """
     block = SimpleNamespace(
@@ -79,16 +79,32 @@ def _tool_response(records):
         id="toolu_stub",
         input={"claims": records},
     )
-    return SimpleNamespace(content=[block], stop_reason="tool_use")
+    return SimpleNamespace(content=[block], stop_reason=stop_reason)
 
 
-def _mock_anthropic(records):
-    """Patch ``anthropic.Anthropic`` so messages.create returns a tool response.
+class _FakeStream:
+    """Context-manager stand-in for ``client.messages.stream(...)``."""
+
+    def __init__(self, message):
+        self._message = message
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get_final_message(self):
+        return self._message
+
+
+def _mock_anthropic(records, stop_reason="tool_use"):
+    """Patch ``anthropic.Anthropic`` so messages.stream yields a tool message.
 
     The real client is never built. Returns (patch_ctx, client, factory).
     """
     client = MagicMock()
-    client.messages.create.return_value = _tool_response(records)
+    client.messages.stream.return_value = _FakeStream(_tool_message(records, stop_reason))
     factory = MagicMock(return_value=client)
     return patch.object(claims.anthropic, "Anthropic", factory), client, factory
 
@@ -170,8 +186,9 @@ def test_uses_forced_tool_and_no_sampling_params():
     ctx, client, _f = _mock_anthropic(_records([("c", _real_anchors(text, 1)[0])]))
     with ctx:
         claims.extract_claims(text)
-    _, kwargs = client.messages.create.call_args
+    _, kwargs = client.messages.stream.call_args
     assert kwargs["model"] == "claude-sonnet-5"
+    assert kwargs["max_tokens"] == 16000  # headroom for dense docs (was 8000)
     assert kwargs["tool_choice"] == {"type": "tool", "name": "record_claims"}
     tool = next(t for t in kwargs["tools"] if t.get("name") == "record_claims")
     # strict tool use guarantees schema conformance (no double-encoded array).
@@ -186,13 +203,53 @@ def test_raises_when_no_tool_call_returned():
     text = _fixture_text(DOC_IDS[0])
     client = MagicMock()
     # A text-only response (no tool_use block) must raise, not silently pass.
-    client.messages.create.return_value = SimpleNamespace(
-        content=[SimpleNamespace(type="text", text="no tool here")]
+    client.messages.stream.return_value = _FakeStream(
+        SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="no tool here")],
+            stop_reason="end_turn",
+        )
     )
     factory = MagicMock(return_value=client)
     with patch.object(claims.anthropic, "Anthropic", factory):
         with pytest.raises(claims.ClaimParseError):
             claims.extract_claims(text)
+
+
+def test_truncated_response_raises_named_error_and_does_not_retry():
+    # A max_tokens stop reason means the tool JSON was cut off. extract_claims
+    # must raise the NAMED ClaimExtractionTruncated and NOT retry (deterministic).
+    text = _fixture_text(DOC_IDS[0])
+    ctx, client, _f = _mock_anthropic(records=[], stop_reason="max_tokens")
+    with ctx:
+        with pytest.raises(claims.ClaimExtractionTruncated):
+            claims.extract_claims(text)
+    assert client.messages.stream.call_count == 1, "truncation must not be retried"
+
+
+def test_empty_claim_list_triggers_retry_then_succeeds():
+    # An empty claim list is a retryable degenerate response: retry, then succeed.
+    text = _fixture_text(DOC_IDS[0])
+    good = _records([(f"claim {i}", a) for i, a in enumerate(_real_anchors(text, 3))])
+    client = MagicMock()
+    client.messages.stream.side_effect = [
+        _FakeStream(_tool_message([], stop_reason="tool_use")),  # empty -> retry
+        _FakeStream(_tool_message(good, stop_reason="tool_use")),  # then valid
+    ]
+    factory = MagicMock(return_value=client)
+    with patch.object(claims.anthropic, "Anthropic", factory):
+        result = claims.extract_claims(text)
+    assert len(result) == 3
+    assert client.messages.stream.call_count == 2, "empty list should have retried once"
+
+
+def test_retry_gives_up_after_max_attempts():
+    # Persistent empty responses exhaust the bounded retry and raise (no infinite loop).
+    text = _fixture_text(DOC_IDS[0])
+    ctx, client, _f = _mock_anthropic(records=[])  # always empty
+    with ctx:
+        with pytest.raises(claims.ClaimParseError):
+            claims.extract_claims(text)
+    assert client.messages.stream.call_count == claims.MAX_EXTRACT_ATTEMPTS
 
 
 # --------------------------------------------------------------------------- #
@@ -253,7 +310,10 @@ def test_prompt_encodes_granularity():
         re.IGNORECASE,
     )
     assert sentence_pat.search(prompt), "prompt lacks 1-3 sentence framing"
-    assert "10" in prompt and "40" in prompt, "prompt lacks ~10-40 count target"
+    # Count guidance is 10-50, density-driven (not a hard ceiling).
+    assert "10" in prompt and "50" in prompt, "prompt lacks 10-50 count guidance"
+    # Consolidation instruction: repeated facts -> one claim.
+    assert "one claim only" in prompt.lower(), "prompt lacks consolidation rule"
 
 
 # --------------------------------------------------------------------------- #
@@ -369,8 +429,8 @@ def test_golden_fenced_payload_parses_and_resolves_drift(doc_id):
     result = claims.parse_claims(raw, fixture_text)
     # Nothing dropped — every model claim survives.
     assert len(result) == len(raw_anchors)
-    # Granularity band.
-    assert 10 <= len(result) <= 40, f"{len(result)} claims outside 10-40"
+    # Density-driven guidance band (not a hard ceiling).
+    assert 10 <= len(result) <= 50, f"{len(result)} claims outside 10-50"
 
     # Every RESOLVED anchor is now a byte-exact source span.
     resolved = [c for c in result if not c.anchor_unresolved]
@@ -491,7 +551,7 @@ def test_generate_miss_then_disk_hit_skips_llm(claims_docs_dir):
     ctx, client, factory = _mock_anthropic(records)
     with ctx:
         first = claims.generate_claims(doc_id, text)
-    assert client.messages.create.call_count == 1
+    assert client.messages.stream.call_count == 1
     assert (claims_docs_dir / f"{doc_id}.claims.json").exists()
     assert isinstance(first, list) and first
     assert all(isinstance(c, claims.Claim) for c in first)
@@ -501,7 +561,7 @@ def test_generate_miss_then_disk_hit_skips_llm(claims_docs_dir):
     ctx2, client2, factory2 = _mock_anthropic(records)
     with ctx2:
         second = claims.generate_claims(doc_id, text)
-    assert client2.messages.create.call_count == 0, "cache-hit re-invoked the LLM"
+    assert client2.messages.stream.call_count == 0, "cache-hit re-invoked the LLM"
     assert factory2.called is False, "cache-hit constructed an Anthropic client"
 
     assert isinstance(second, list) and second
@@ -521,6 +581,82 @@ def test_miss_path_result_matches_persisted_sidecar(claims_docs_dir):
     sidecar = claims_docs_dir / f"{doc_id}.claims.json"
     loaded = json.loads(sidecar.read_text())
     assert _unwrap_claim_dicts(loaded) == [c.to_dict() for c in returned]
+
+
+# --------------------------------------------------------------------------- #
+# Cache integrity: sidecar carries source_hash; get-or-create regenerates when
+# the served document's hash disagrees with the cached one.
+# --------------------------------------------------------------------------- #
+
+
+def test_generate_stamps_source_hash_and_hits_on_match(claims_docs_dir):
+    doc_id = DOC_IDS[1]
+    text = _fixture_text(doc_id)
+    records = _records(
+        [(f"claim {i}", a) for i, a in enumerate(_real_anchors(text, 3))]
+    )
+
+    ctx, client, _f = _mock_anthropic(records)
+    with ctx:
+        first = claims.generate_claims(doc_id, text)
+    assert client.messages.stream.call_count == 1
+
+    # The sidecar is stamped with the source hash.
+    data = json.loads((claims_docs_dir / f"{doc_id}.claims.json").read_text())
+    assert data["source_hash"] == claims._hash_source(text)
+
+    # Same document -> hash matches -> cache hit, no LLM, no client built.
+    ctx2, client2, factory2 = _mock_anthropic(records)
+    with ctx2:
+        second = claims.generate_claims(doc_id, text)
+    assert client2.messages.stream.call_count == 0, "matching hash re-invoked LLM"
+    assert factory2.called is False
+    assert [c.to_dict() for c in second] == [c.to_dict() for c in first]
+
+
+def test_generate_regenerates_on_source_hash_mismatch(claims_docs_dir):
+    doc_id = DOC_IDS[0]
+    text = _fixture_text(doc_id)
+    records = _records(
+        [(f"claim {i}", a) for i, a in enumerate(_real_anchors(text, 4))]
+    )
+
+    ctx, client, _f = _mock_anthropic(records)
+    with ctx:
+        claims.generate_claims(doc_id, text)
+    assert client.messages.stream.call_count == 1
+
+    # The served document drifted (e.g. the vault page was edited after caching)
+    # -> its hash no longer matches the stamped one -> MUST regenerate.
+    changed = text + "\n\n## New section added upstream\n\nA fresh fact.\n"
+    assert claims._hash_source(changed) != claims._hash_source(text)
+    ctx2, client2, _f2 = _mock_anthropic(records)
+    with ctx2:
+        claims.generate_claims(doc_id, changed)
+    assert client2.messages.stream.call_count == 1, "stale cache was not regenerated"
+
+    # The rewritten sidecar now carries the CURRENT document's hash.
+    data = json.loads((claims_docs_dir / f"{doc_id}.claims.json").read_text())
+    assert data["source_hash"] == claims._hash_source(changed)
+
+
+def test_generate_regenerates_when_sidecar_has_no_hash(claims_docs_dir):
+    # A legacy/hand-written sidecar with no source_hash can't be verified, so
+    # get-or-create must regenerate rather than serve an unverifiable rubric.
+    doc_id = DOC_IDS[2]
+    text = _fixture_text(doc_id)
+    stale = [claims.Claim("c1", "old claim", _real_anchors(text, 1)[0])]
+    claims.write_claims(doc_id, stale)  # no source_hash passed
+    assert claims._cached_source_hash(doc_id) is None
+
+    records = _records(
+        [(f"claim {i}", a) for i, a in enumerate(_real_anchors(text, 3))]
+    )
+    ctx, client, _f = _mock_anthropic(records)
+    with ctx:
+        claims.generate_claims(doc_id, text)
+    assert client.messages.stream.call_count == 1, "unverifiable cache not rebuilt"
+    assert claims._cached_source_hash(doc_id) == claims._hash_source(text)
 
 
 def test_documents_dir_defined_locally_not_reexported_from_documents():

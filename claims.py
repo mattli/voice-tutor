@@ -29,6 +29,7 @@ Robustness against real model output (learned from a credentialed smoke run):
 """
 
 import difflib
+import hashlib
 import json
 import re
 import unicodedata
@@ -45,8 +46,16 @@ import anthropic
 DOCUMENTS_DIR = Path.home() / ".voice-tutor" / "documents"
 
 MODEL = "claude-sonnet-5"
-MAX_TOKENS = 8_000
+# A dense document's claim set (40-50 claims, each with a verbatim anchor) runs
+# well past 8K output tokens; the old 8K cap truncated the tool call mid-JSON on
+# dense docs. 16K gives comfortable headroom; extract_claims streams (required
+# above ~16K to avoid SDK HTTP timeouts) and trips on a max_tokens stop reason.
+# The remaining ceiling is the input bound (MAX_DOC_CHARS_IN), tracked in backlog.
+MAX_TOKENS = 16_000
 MAX_DOC_CHARS_IN = 100_000
+# Bounded retries for RETRYABLE extraction outcomes only (empty claim list,
+# transient API errors) — never for max_tokens truncation, which is deterministic.
+MAX_EXTRACT_ATTEMPTS = 3
 
 # Minimum normalized-similarity for a drifted anchor to count as "resolved" to a
 # source span. Below this, the claim is kept but flagged anchor_unresolved.
@@ -55,7 +64,8 @@ RESOLVE_THRESHOLD = 0.75
 # The prompt encodes the required granularity:
 #   * claims a person could articulate in 1-3 spoken sentences,
 #   * not one claim per sentence, not chapter-level themes,
-#   * roughly 10-40 claims for a typical document.
+#   * consolidate facts the source repeats across sections,
+#   * typically 10-50 claims, driven by document density.
 # The output SHAPE is enforced structurally by the forced tool call, so the
 # prompt no longer pleads for bare JSON / no fences — it only shapes content.
 CLAIMS_PROMPT = (
@@ -66,8 +76,11 @@ CLAIMS_PROMPT = (
     "- Do NOT emit one claim per sentence of the document — merge closely "
     "related sentences into a single articulable claim.\n"
     "- Do NOT emit broad chapter-level themes — those are too coarse to assess.\n"
-    "- Aim for roughly 10 to 40 claims for a typical document; a short document "
-    "may have fewer.\n\n"
+    "- If the source repeats the same fact or statistic in multiple sections, "
+    "express it in ONE claim only, anchored to its most substantive occurrence "
+    "— do not transcribe the repetition.\n"
+    "- Let the count follow the document's density: typically 10 to 50 claims; "
+    "a short document may have fewer.\n\n"
     "Call the record_claims tool exactly once with the full list. For each "
     "claim provide:\n"
     "  - claim: the claim text, phrased as a standalone assertion.\n"
@@ -124,6 +137,16 @@ CLAIMS_TOOL = {
 
 class ClaimParseError(Exception):
     """Raised when the model's response cannot be parsed/validated into claims."""
+
+
+class ClaimExtractionTruncated(ClaimParseError):
+    """Raised when the model response was cut off at ``max_tokens``.
+
+    A capped response leaves the tool-call JSON truncated (empty/partial input).
+    This is DETERMINISTIC for a given document + token budget, so it is never
+    retried — retrying burns tokens to hit the same wall. It signals that the
+    document's claim set exceeds the output budget; raise the input/output bound.
+    """
 
 
 @dataclass(frozen=True)
@@ -347,20 +370,21 @@ def _tool_input(response) -> dict:
     raise ClaimParseError("model did not return a record_claims tool call")
 
 
-def extract_claims(document_text: str) -> list[Claim]:
-    """Decompose ``document_text`` into an ordered list of :class:`Claim` records.
+# Transient API failures worth retrying (429 / 5xx / network); NOT 400/401/404.
+_TRANSIENT_API_ERRORS = (
+    anthropic.APIConnectionError,
+    anthropic.RateLimitError,
+    anthropic.InternalServerError,
+)
 
-    Pure function core: text in -> structured claim list out. The Anthropic
-    client is constructed lazily here (never at import time) so importing this
-    module reads no API key and performs no network I/O. Output shape is enforced
-    by a forced tool call (no fences / no JSON-escaping failure modes possible).
 
-    Raises:
-        ClaimParseError: if the model returns no tool call or a malformed record
-            set (see :func:`claims_from_records`).
+def _stream_final_message(client, document_text: str):
+    """Stream one forced record_claims turn and return the final SDK message.
+
+    Streaming (vs a blocking create) is required at MAX_TOKENS=16K to avoid SDK
+    HTTP timeouts on long generations.
     """
-    client = anthropic.Anthropic()
-    response = client.messages.create(
+    with client.messages.stream(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         thinking={"type": "disabled"},
@@ -374,11 +398,59 @@ def extract_claims(document_text: str) -> list[Claim]:
                 ),
             }
         ],
-    )
-    data = _tool_input(response)
-    if not isinstance(data, dict) or "claims" not in data:
-        raise ClaimParseError('record_claims input missing "claims"')
-    return claims_from_records(data["claims"], document_text)
+    ) as stream:
+        return stream.get_final_message()
+
+
+def extract_claims(document_text: str) -> list[Claim]:
+    """Decompose ``document_text`` into an ordered list of :class:`Claim` records.
+
+    Pure function core: text in -> structured claim list out. The Anthropic
+    client is constructed lazily here (never at import time) so importing this
+    module reads no API key and performs no network I/O. Output shape is enforced
+    by a forced tool call (no fences / no JSON-escaping failure modes possible).
+
+    Retries up to ``MAX_EXTRACT_ATTEMPTS`` on RETRYABLE outcomes only — an empty
+    claim list, a malformed tool input, or a transient API error. A ``max_tokens``
+    truncation is deterministic and is NOT retried.
+
+    Raises:
+        ClaimExtractionTruncated: if the response was capped at ``max_tokens``.
+        ClaimParseError: if, after all attempts, the model returned no usable
+            record set (malformed input or persistently empty).
+    """
+    client = anthropic.Anthropic()
+    last_error: Exception | None = None
+    for _attempt in range(MAX_EXTRACT_ATTEMPTS):
+        try:
+            response = _stream_final_message(client, document_text)
+        except _TRANSIENT_API_ERRORS as e:  # transient -> retry
+            last_error = e
+            continue
+
+        # Truncation first: a capped response has partial/empty tool JSON. Raise a
+        # named, non-retryable error rather than letting it look like empty input.
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            raise ClaimExtractionTruncated(
+                f"model response hit max_tokens ({MAX_TOKENS}); this document's "
+                "claim set exceeds the output budget — raise the bound, do not retry"
+            )
+
+        try:
+            data = _tool_input(response)
+            if not isinstance(data, dict) or not isinstance(data.get("claims"), list):
+                raise ClaimParseError("record_claims input missing a claims list")
+            result = claims_from_records(data["claims"], document_text)
+        except ClaimParseError as e:  # malformed but not truncated -> retry
+            last_error = e
+            continue
+
+        if not result:  # empty claim list -> retryable degenerate response
+            last_error = ClaimParseError("model returned an empty claim list")
+            continue
+        return result
+
+    raise last_error if last_error else ClaimParseError("claim extraction failed")
 
 
 # --------------------------------------------------------------------------- #
@@ -391,8 +463,20 @@ def extract_claims(document_text: str) -> list[Claim]:
 # tests can redirect it into a tmp_path.
 # --------------------------------------------------------------------------- #
 
-# Top-level JSON key wrapping the claim list in the sidecar envelope.
+# Top-level JSON keys in the sidecar envelope.
 _CLAIMS_KEY = "claims"
+_HASH_KEY = "source_hash"
+
+
+def _hash_source(document_text: str) -> str:
+    """Stable content hash of the input text — the cache-integrity key.
+
+    A cached rubric is only valid for the exact document it was generated from.
+    The served document can drift (e.g. a vault page edited after the rubric was
+    cached), so the hash lets get-or-create detect skew and regenerate rather
+    than serve a rubric that silently disagrees with the current text.
+    """
+    return hashlib.sha256(document_text.encode("utf-8")).hexdigest()
 
 
 def _claims_path(doc_id: str) -> Path:
@@ -404,9 +488,13 @@ def _claims_path(doc_id: str) -> Path:
     return DOCUMENTS_DIR / f"{doc_id}.claims.json"
 
 
-def _serialize(claims: list[Claim]) -> str:
-    """Serialize ``claims`` to human-readable (indented, multi-line) JSON text."""
-    envelope = {_CLAIMS_KEY: [c.to_dict() for c in claims]}
+def _serialize(claims: list[Claim], source_hash: str | None = None) -> str:
+    """Serialize ``claims`` to human-readable (indented, multi-line) JSON text.
+
+    The envelope carries a ``source_hash`` (the hash of the document the claims
+    were generated from) so the cache can detect document drift.
+    """
+    envelope = {_HASH_KEY: source_hash, _CLAIMS_KEY: [c.to_dict() for c in claims]}
     return json.dumps(envelope, indent=2, ensure_ascii=False)
 
 
@@ -427,16 +515,19 @@ def _deserialize(text: str) -> list[Claim]:
     ]
 
 
-def write_claims(doc_id: str, claims: list[Claim]) -> Path:
+def write_claims(
+    doc_id: str, claims: list[Claim], source_hash: str | None = None
+) -> Path:
     """Persist ``claims`` to the ``{doc_id}.claims.json`` sidecar; return its path.
 
     Writes human-readable, indented JSON next to the document, mirroring
     documents._summary_path/save_upload's sidecar write. Creates
-    ``DOCUMENTS_DIR`` if needed.
+    ``DOCUMENTS_DIR`` if needed. Pass ``source_hash`` to stamp the sidecar with
+    the hash of the document the claims were generated from (cache integrity).
     """
     path = _claims_path(doc_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_serialize(claims))
+    path.write_text(_serialize(claims, source_hash))
     return path
 
 
@@ -448,19 +539,34 @@ def load_claims(doc_id: str) -> list[Claim] | None:
     return _deserialize(path.read_text())
 
 
+def _cached_source_hash(doc_id: str) -> str | None:
+    """Return the ``source_hash`` stamped on ``doc_id``'s sidecar, or None.
+
+    None both when no sidecar exists and when a sidecar predates hashing (no
+    stamp) — either way the cache cannot be verified, so callers regenerate.
+    """
+    path = _claims_path(doc_id)
+    if not path.exists():
+        return None
+    data = json.loads(path.read_text())
+    return data.get(_HASH_KEY) if isinstance(data, dict) else None
+
+
 def generate_claims(doc_id: str, document_text: str) -> list[Claim]:
     """Get-or-create the claim set for ``doc_id``, generated once per document.
 
-    If the ``{doc_id}.claims.json`` sidecar already exists ON DISK, its claim
-    records are reconstructed and returned WITHOUT invoking the Anthropic client
-    (no redundant LLM call). Otherwise the (mocked-in-tests) LLM decomposition
-    runs, the sidecar is written, and the fresh records are returned.
-
-    The return type is identical on both paths: ``list[Claim]``.
+    Cache integrity is keyed on the document's content hash: the sidecar is
+    reused (NO LLM call) only when its stamped ``source_hash`` matches the hash
+    of ``document_text``. If the sidecar is absent OR its hash disagrees with the
+    current text (the served document drifted since the rubric was cached), the
+    (mocked-in-tests) LLM decomposition re-runs and the sidecar is rewritten with
+    the fresh hash. The return type is identical on both paths: ``list[Claim]``.
     """
-    cached = load_claims(doc_id)
-    if cached is not None:
-        return cached
+    current_hash = _hash_source(document_text)
+    if _cached_source_hash(doc_id) == current_hash:
+        cached = load_claims(doc_id)
+        if cached is not None:
+            return cached
     claims = extract_claims(document_text)
-    write_claims(doc_id, claims)
+    write_claims(doc_id, claims, source_hash=current_hash)
     return claims
