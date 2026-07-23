@@ -55,6 +55,32 @@ def docs_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def claims_docs_dir(tmp_path, monkeypatch):
+    """Redirect claims.DOCUMENTS_DIR to a per-test tmp_path.
+
+    Mirrors the ``docs_dir`` fixture, but targets the ``claims`` module's OWN
+    module-level ``DOCUMENTS_DIR`` (defined in claims.py, NOT re-exported from
+    documents.py). ``claims._claims_path`` reads that attribute at call time, so
+    monkeypatching it is the real resolution path and guarantees .claims.json
+    sidecar writes land in tmp_path and never in the real ~/.voice-tutor
+    documents directory. Snapshots the real dir to prove it is byte-for-byte
+    unchanged after each test.
+    """
+    import claims
+
+    real_dir = claims.DOCUMENTS_DIR
+    before = _snapshot(real_dir)
+
+    target = tmp_path / "documents"
+    monkeypatch.setattr(claims, "DOCUMENTS_DIR", target)
+
+    yield target
+
+    after = _snapshot(real_dir)
+    assert after == before, "production documents dir was mutated by a test"
+
+
+@pytest.fixture
 def sample_pdf_bytes():
     """Raw bytes of the committed, real PDF fixture (tests/fixtures/sample.pdf)."""
     from pathlib import Path
