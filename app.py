@@ -8,6 +8,7 @@ app inside its CLI entry point with no extension hook, so we replicate the
 The voice pipeline lives in bot.py; this module only handles HTTP.
 """
 
+import asyncio
 import json
 import os
 import uuid
@@ -33,6 +34,7 @@ from pipecat.transports.smallwebrtc.request_handler import (
 from pipecat_ai_small_webrtc_prebuilt.frontend import SmallWebRTCPrebuiltUI
 
 import bot
+import claims
 import documents
 import sessions
 
@@ -152,6 +154,64 @@ async def upload_document(file: UploadFile):
 @app.get("/api/documents")
 async def list_documents_route():
     return await documents.list_documents()
+
+
+# Claim-map warming. Claim extraction is a 30-60s live LLM call on an uncached
+# doc, so it must NOT run on the session-start path (it would hang the pipeline).
+# Instead the frontend fires this endpoint the moment a doc is selected, warming
+# the sidecar cache in the background so the map is ready by the time a session
+# starts. bot.py reads the result via claims.load_fresh_claims (cache-only).
+#
+# `_claims_warming` de-dups in-flight extractions. Access is confined to the
+# synchronous (await-free) prologue of prepare_claims and to _warm_claims's
+# terminal discard, so the single-threaded event loop makes check-and-add atomic
+# — no lock needed.
+_claims_warming: set[str] = set()
+
+
+async def _warm_claims(doc_id: str) -> None:
+    """Background task: run get-or-create for ``doc_id`` off the event loop.
+
+    Extraction (``claims.generate_claims``) is blocking, so it is offloaded to a
+    worker thread. The in-flight marker is always cleared, even on failure, so a
+    transient extraction error doesn't permanently wedge the doc as "warming".
+    """
+    try:
+        loaded = documents.load_document(doc_id)
+        if loaded is None:
+            return
+        _title, text = loaded
+        await asyncio.to_thread(claims.generate_claims, doc_id, text)
+    except Exception as e:  # extraction is best-effort; a failure just means no map
+        print(f"[claims-warm] {doc_id} extraction failed: {e!r}", flush=True)
+    finally:
+        _claims_warming.discard(doc_id)
+
+
+@app.post("/api/documents/{doc_id}/claims/prepare", status_code=202)
+async def prepare_claims(doc_id: str, background_tasks: BackgroundTasks):
+    """Idempotent, non-blocking warm of ``doc_id``'s claim map.
+
+    Returns immediately with a status the caller may ignore (fire-and-forget):
+      * ``unknown``   — no such document; nothing to warm.
+      * ``cached``    — a fresh claim map already exists (no work scheduled).
+      * ``in_flight`` — extraction is already running for this doc.
+      * ``warming``   — extraction was just scheduled in the background.
+
+    Safe to call unconditionally on every doc selection.
+    """
+    safe_id = Path(doc_id).name  # path-traversal guard, mirrors other routes
+    loaded = documents.load_document(safe_id)
+    if loaded is None:
+        return {"status": "unknown"}
+    _title, text = loaded
+    if claims.load_fresh_claims(safe_id, text) is not None:
+        return {"status": "cached"}
+    if safe_id in _claims_warming:
+        return {"status": "in_flight"}
+    _claims_warming.add(safe_id)
+    background_tasks.add_task(_warm_claims, safe_id)
+    return {"status": "warming"}
 
 
 STUDY_HTML = Path(__file__).parent / "static" / "study.html"

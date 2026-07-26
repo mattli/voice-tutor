@@ -1009,6 +1009,10 @@
     const d = docs.find(x => x.document_id === id);
     if (!d) return;
     currentDoc = d;
+    // Fire-and-forget: warm the claim map in the background so it's ready by the
+    // time a session starts. Idempotent + non-blocking server-side (no-ops if
+    // already cached or in flight); safe to call on every selection.
+    fetch(`/api/documents/${encodeURIComponent(id)}/claims/prepare`, { method: 'POST' }).catch(() => {});
     $('session-doc-title').textContent = d.title;
     $('session-doc-meta').textContent = `${d.char_count.toLocaleString()} chars · added ${d.uploaded_at.slice(0,10)}`;
     const summaryEl = $('session-doc-summary');

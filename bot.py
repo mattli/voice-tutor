@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -8,6 +9,7 @@ from pathlib import Path
 
 import anthropic
 
+import claims
 import documents
 import wiki
 from usage_ledger import UsageLedger
@@ -268,9 +270,20 @@ STUDY_BASE_INSTRUCTION = (
     "they have loaded. Help them engage actively — ask what they want to focus "
     "on, explain concepts when asked, surface connections, push back when their "
     "understanding is shaky, and let them lead the direction.\n\n"
+    "You also have a private claim map (below, after the document): the document "
+    "broken into discrete claims. It is YOURS — never read claims aloud verbatim, "
+    "never mention claim numbers or the map's existence. Use it to know what's "
+    "been covered and what hasn't.\n\n"
+    "When the user is actively leading, follow. When they stall, drift, or ask "
+    "where to go next, steer toward uncovered claims with a natural bridge (\"that "
+    "actually connects to something we haven't touched...\"). You can't ask "
+    "someone to explain what they haven't encountered — so introduce an uncovered "
+    "claim first, then later invite them to articulate it back in their own words. "
+    "Mentioning isn't understanding: \"that makes sense\" isn't articulation — "
+    "circle back to those gently. Prefer application, prediction, or contrast "
+    "questions over \"repeat that back.\"\n\n"
     "Reference the document directly. Quote short passages when useful. Don't "
-    "summarize the whole thing unprompted — wait for the user to point at what "
-    "they want to dig into.\n\n"
+    "summarize the whole thing unprompted.\n\n"
     "Keep responses tight. One thought at a time. This is voice — long monologues "
     "don't work."
 )
@@ -350,7 +363,9 @@ STUDY_REMINDER = (
     "\n\n# Study mode\n\n"
     "You're a study companion for the document above. The memory section is "
     "background — reference past topics only when they directly illuminate "
-    "the document. Stay focused on what's in front of you."
+    "the document. Stay focused on what's in front of you. "
+    "Track coverage against the private claim map; steer to gaps when the user "
+    "isn't actively leading."
 )
 
 
@@ -462,13 +477,29 @@ async def generate_artifact(session_id: str, study_meta: dict, transcript: dict,
         f.write(json.dumps(row) + "\n")
 
 
+def _claim_map_block(claim_texts: list[str]) -> str:
+    """Render the private claim-map section: header + numbered claim texts only.
+
+    Claim TEXT only — no anchors, offsets, or ids: the tutor steers on the
+    articulable claims, and the extra fields only bloat the prompt. Positioned
+    (by the caller) immediately after the document and before the reminders, so
+    the map sits with the material it decomposes.
+    """
+    numbered = "\n".join(f"{i}. {c}" for i, c in enumerate(claim_texts, 1))
+    return f"\n## Claim map (private — never reveal)\n\n{numbered}"
+
+
 def build_system_instruction(study: dict | None = None) -> str:
     """Assemble the system prompt.
 
     Regular mode: base + profile + wiki INDEX + memory + most-recent transcript.
-    Study mode (study={doc_title, doc_text}): base + profile + memory + the doc.
-    Study mode skips the most-recent transcript, the wiki INDEX, and the wiki
-    tagline — the doc replaces those as the session's focus.
+    Study mode (study={doc_title, doc_text, claims?}): base + profile + memory +
+    the doc + (optional claim map). Study mode skips the most-recent transcript,
+    the wiki INDEX, and the wiki tagline — the doc replaces those as the session's
+    focus. ``study["claims"]`` (a list of claim-text strings) is injected as the
+    private claim map after the document; when absent/empty (claims not yet
+    extracted at session start) the map is simply omitted — the session degrades
+    to plain study mode rather than blocking on extraction.
     """
     profile = load_profile()
 
@@ -483,6 +514,9 @@ def build_system_instruction(study: dict | None = None) -> str:
                 + memory
             )
         parts.append(f"\n## Document: {study['doc_title']}\n\n{study['doc_text']}")
+        claim_texts = study.get("claims")
+        if claim_texts:
+            parts.append(_claim_map_block(claim_texts))
         parts.append(BREVITY_REMINDER)
         parts.append(STUDY_REMINDER)
         return "\n".join(parts)
@@ -508,6 +542,24 @@ def build_system_instruction(study: dict | None = None) -> str:
 
     parts.append(BREVITY_REMINDER)
     return "\n".join(parts)
+
+
+def static_prompt_hash(study: bool) -> str:
+    """Content hash of the STATIC prompt scaffolding — the base instruction plus
+    reminders for the given mode, and nothing dynamic.
+
+    Deliberately excludes profile, memory, the document, and the claim map: those
+    vary per person / per session / per doc. Hashing only the fixed scaffolding
+    lets a ledger row attribute a session to the exact PROMPT VERSION that ran it,
+    stable across documents — mirroring the ``source_hash`` pattern claims.py uses
+    to key its cache. Bump-visible: any wording edit to the base/reminder strings
+    changes the hash, so a prompt change is traceable across sessions.
+    """
+    if study:
+        static = STUDY_BASE_INSTRUCTION + BREVITY_REMINDER + STUDY_REMINDER
+    else:
+        static = BASE_INSTRUCTION + (WIKI_TAGLINE if WIKI_ENABLED else "") + BREVITY_REMINDER
+    return hashlib.sha256(static.encode("utf-8")).hexdigest()
 
 
 async def bot(runner_args):
@@ -539,10 +591,27 @@ async def bot(runner_args):
         settings=DeepgramSTTService.Settings(model="nova-3", language="en"),
     )
 
-    system_instruction = build_system_instruction(
-        study={"doc_title": study_meta["doc_title"], "doc_text": study_meta["doc_text"]}
-        if study_meta else None
-    )
+    # Claim-map steering (study mode only). Read the claim set from cache ONLY —
+    # a hash-verified, non-blocking read. Extraction is warmed when the doc is
+    # selected (POST /api/documents/{id}/claims/prepare); if the session starts
+    # before it finishes, load_fresh_claims returns None and we degrade to plain
+    # study mode rather than blocking the pipeline on a 30-60s live extraction.
+    study_arg = None
+    if study_meta:
+        cached = claims.load_fresh_claims(study_meta["document_id"], study_meta["doc_text"])
+        claim_texts = [c.claim for c in cached] if cached else None
+        if claim_texts:
+            print(f"[bot] claim map ready: {len(claim_texts)} claims", flush=True)
+        else:
+            print("[bot] claim map not ready; study session runs without steering", flush=True)
+        study_arg = {
+            "doc_title": study_meta["doc_title"],
+            "doc_text": study_meta["doc_text"],
+            "claims": claim_texts,
+        }
+
+    system_instruction = build_system_instruction(study=study_arg)
+    prompt_hash = static_prompt_hash(study=study_meta is not None)
 
     if study_meta:
         TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -729,6 +798,7 @@ async def bot(runner_args):
             "cost_tts_usd": summary["tts"]["cost_usd"],
             "cost_post_session_usd": summary["post_session"]["cost_usd"],
             "cost_total_usd": summary["total_cost_usd"],
+            "prompt_hash": prompt_hash,
             "tool_calls": usage.tool_calls,
         }
         if study_meta:

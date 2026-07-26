@@ -573,6 +573,26 @@ def _cached_source_hash(doc_id: str) -> str | None:
     return data.get(_HASH_KEY) if isinstance(data, dict) else None
 
 
+def load_fresh_claims(doc_id: str, document_text: str) -> list[Claim] | None:
+    """Return the cached claim set for ``doc_id`` ONLY if it is fresh; else None.
+
+    "Fresh" means a sidecar exists AND its stamped ``source_hash`` matches the
+    hash of ``document_text`` — i.e. the cache was generated from exactly the
+    text about to be used. This is a NON-BLOCKING read (file I/O only): it never
+    triggers extraction, unlike :func:`generate_claims`. It is the session-start
+    accessor — a study session reads the claim map here and, when None (absent,
+    stale, or unreadable), proceeds WITHOUT the claim-map section rather than
+    blocking on a 30-60s live extraction. Extraction is warmed separately when the
+    document is selected. Returns None (never raises) on any read/parse failure.
+    """
+    if _cached_source_hash(doc_id) != _hash_source(document_text):
+        return None
+    try:
+        return load_claims(doc_id)
+    except (ValueError, OSError, ClaimParseError):
+        return None
+
+
 def generate_claims(doc_id: str, document_text: str) -> list[Claim]:
     """Get-or-create the claim set for ``doc_id``, generated once per document.
 
