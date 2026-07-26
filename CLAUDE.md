@@ -36,3 +36,12 @@ Instead follow the repo's established pattern: put logic in pure, importable mod
 ## Diagnostic tools parse the secrets file directly — don't tell Matt to `source` it
 
 `reconcile_costs.py` (and similar standalone diagnostics) parse `~/.voice-tutor-secrets.env` and the app's `.env` directly at runtime — no `source`/`set -a` needed, and a plain `source` wouldn't export vars into the Python subprocess anyway. Precedence: app `.env` first, then `~/.voice-tutor-secrets.env` overrides it, then real env vars override both. So a usage-scoped Deepgram key + `DEEPGRAM_PROJECT_ID` in the secrets file correctly shadow the app's lower-scoped `.env` `DEEPGRAM_API_KEY`. Keys are never printed. Run is just `.venv/bin/python reconcile_costs.py [--providers ...]`.
+
+## Claim extraction is a 30–60s LLM call — never run it on the session-start path (2026-07-26)
+
+`claims.generate_claims` (get-or-create) does a live Sonnet extraction on an uncached doc that takes **30–60s**. Study-mode session start must NOT call it — that would hang the WebRTC pipeline while the user waits. The wiring splits into two paths:
+
+- **Session start reads cache-only** via `claims.load_fresh_claims(doc_id, text)` — a non-blocking, `source_hash`-verified read that returns the map only if a *fresh* sidecar exists, else `None`. On `None`, `build_system_instruction` omits the claim map and the session **degrades to plain study mode** rather than blocking. Never swap this for `generate_claims` "to be safe" — you'd reintroduce the hang.
+- **Extraction is warmed ahead of time** by `POST /api/documents/{id}/claims/prepare`, fired fire-and-forget from `selectDoc()` in `static/study.html` the moment a doc is picked. It's idempotent + non-blocking (no-ops if `cached`/`in_flight`; runs `generate_claims` off the event loop via `asyncio.to_thread`), so it's safe to call on every selection. The in-flight dedup set relies on the endpoint's await-free prologue being atomic under the single-threaded event loop — keep it await-free.
+
+The map is injected **after the document, before the reminders** (position is load-bearing; `tests/test_study_claim_steering.py` pins it). The live prompt is a **condensed v0**, not the fuller `products/voice-tutor/planning/2026-07-23-study-tutor-prompt-v1.md` draft. Each session row carries a `prompt_hash` (hash of the static base+reminders, doc-independent) so sessions are attributable to the exact prompt version.
