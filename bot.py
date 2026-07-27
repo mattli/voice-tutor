@@ -81,6 +81,17 @@ USAGE_TRACE = os.getenv("VOICE_TUTOR_USAGE_TRACE", "").strip().lower() not in ("
 _DEDUP_DISABLE_VALUES = ("0", "false", "no", "off", "disable", "disabled")
 USAGE_DEDUP = os.getenv("VOICE_TUTOR_USAGE_DEDUP", "").strip().lower() not in _DEDUP_DISABLE_VALUES
 
+# Session-aware opening. ON by default: the study tutor opens with a plan
+# (orient + propose on a first session; recap + offer the choice on a return).
+# To revert to the legacy blank-slate greeting with NO rebuild, set
+# VOICE_TUTOR_SESSION_OPENING to any of these (case-insensitive): 0, false, no,
+# off, disable, disabled. ANY OTHER value — including empty/unset — leaves it ON.
+_SESSION_OPENING_DISABLE_VALUES = ("0", "false", "no", "off", "disable", "disabled")
+SESSION_OPENING = (
+    os.getenv("VOICE_TUTOR_SESSION_OPENING", "").strip().lower()
+    not in _SESSION_OPENING_DISABLE_VALUES
+)
+
 
 class UsageAccumulator(BaseObserver):
     def __init__(self):
@@ -287,6 +298,23 @@ STUDY_BASE_INSTRUCTION = (
     "Keep responses tight. One thought at a time. This is voice — long monologues "
     "don't work."
 )
+
+# Hidden first-turn trigger. The default produces a generic greeting; the study
+# variant (flag ON) triggers the "Opening the session" behavior in the study base.
+DEFAULT_KICKOFF_MESSAGE = "Say hello and introduce yourself briefly."
+STUDY_KICKOFF_MESSAGE = (
+    "Begin the study session now. Open by orienting the user per your "
+    '"Opening the session" instructions — do not just say a generic hello.'
+)
+
+
+def kickoff_message(study: bool) -> str:
+    """The hidden opening turn. Study + flag ON → the plan-triggering message;
+    otherwise the legacy greeting (regular mode, or study with the flag off)."""
+    if study and SESSION_OPENING:
+        return STUDY_KICKOFF_MESSAGE
+    return DEFAULT_KICKOFF_MESSAGE
+
 
 ARTIFACT_PROMPT = """\
 You are writing a markdown recap of a voice-mode study session about a specific \
