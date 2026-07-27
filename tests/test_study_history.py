@@ -118,3 +118,37 @@ def test_ignores_non_session_and_non_study_rows(study_history_tmp):
     )
     out = sh.previous_session_recap("doc-1", exclude_session_id="s-current")
     assert out == {"covered": ["Alpha", "Beta"], "open_threads": ["Gamma"]}
+
+
+def test_unreadable_artifact_returns_none(study_history_tmp):
+    ledger, artifacts = study_history_tmp
+    _seed(
+        ledger, artifacts,
+        rows=[_row("s-new", "doc-1", "2026-07-25T10:00:00")],
+        recaps={},
+    )
+    # Create the artifact path as a directory instead of a file, so
+    # read_text() raises IsADirectoryError — a cross-platform way to force
+    # a read failure without relying on chmod.
+    (artifacts / "s-new.md").mkdir()
+    assert sh.previous_session_recap("doc-1", exclude_session_id="s-current") is None
+
+
+def test_empty_artifact_returns_none(study_history_tmp):
+    ledger, artifacts = study_history_tmp
+    _seed(
+        ledger, artifacts,
+        rows=[_row("s-new", "doc-1", "2026-07-25T10:00:00")],
+        recaps={"s-new": ""},
+    )
+    assert sh.previous_session_recap("doc-1", exclude_session_id="s-current") is None
+
+
+def test_whitespace_only_artifact_returns_none(study_history_tmp):
+    ledger, artifacts = study_history_tmp
+    _seed(
+        ledger, artifacts,
+        rows=[_row("s-new", "doc-1", "2026-07-25T10:00:00")],
+        recaps={"s-new": "  \n\t  "},
+    )
+    assert sh.previous_session_recap("doc-1", exclude_session_id="s-current") is None

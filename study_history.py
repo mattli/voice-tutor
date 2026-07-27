@@ -79,4 +79,10 @@ def previous_session_recap(document_id, exclude_session_id):
     artifact = ARTIFACTS_DIR / f"{best_sid}.md"
     if not artifact.exists():
         return None  # newest-only: do not walk back to an older recap
-    return parse_recap_sections(artifact.read_text())
+    try:
+        text = artifact.read_text()
+    except Exception:
+        return None  # unreadable artifact (permission, encoding, delete race): degrade
+    if not text.strip():
+        return None  # empty/whitespace recap is not a recap
+    return parse_recap_sections(text)

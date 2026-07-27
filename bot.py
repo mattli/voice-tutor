@@ -717,9 +717,17 @@ async def bot(runner_args):
             print("[bot] claim map not ready; study session runs without steering", flush=True)
         previously = None
         if SESSION_OPENING:
-            previously = study_history.previous_session_recap(
-                study_meta["document_id"], study_meta["session_id"]
-            )
+            try:
+                previously = study_history.previous_session_recap(
+                    study_meta["document_id"], study_meta["session_id"]
+                )
+            except Exception:
+                print(
+                    "[bot] previous_session_recap failed; degrading to first-session opener",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                previously = None
         study_arg = {
             "doc_title": study_meta["doc_title"],
             "doc_text": study_meta["doc_text"],
