@@ -561,6 +561,30 @@ def _claim_map_block(claim_texts: list[str]) -> str:
     return f"\n## Claim map (private — never reveal)\n\n{numbered}"
 
 
+def _previously_block(previously: dict) -> str:
+    """Render the prior-session recap for the returning-session opener. Accepts
+    either shape from study_history.parse_recap_sections: the parsed
+    {"covered", "open_threads"} or the {"fallback_text"} fallback."""
+    header = "\n# Where you left off on this document\n"
+    guide = (
+        "\n(This is a returning session. Use this to recap briefly and offer to "
+        "continue or revisit — see \"Opening the session\". Never read it verbatim.)"
+    )
+    if "fallback_text" in previously:
+        return f"{header}\nRecap of the previous session:\n\n{previously['fallback_text']}\n{guide}"
+
+    lines = [header, "\nIn the previous session you covered:"]
+    for item in previously.get("covered", []):
+        lines.append(f"- {item}")
+    open_threads = previously.get("open_threads", [])
+    if open_threads:
+        lines.append("\nLeft open:")
+        for item in open_threads:
+            lines.append(f"- {item}")
+    lines.append(guide)
+    return "\n".join(lines)
+
+
 def build_system_instruction(study: dict | None = None) -> str:
     """Assemble the system prompt.
 
@@ -586,6 +610,9 @@ def build_system_instruction(study: dict | None = None) -> str:
                 "\n# Background — Matt's prior topics (reference only if directly relevant to the document)\n\n"
                 + memory
             )
+        previously = study.get("previously") if SESSION_OPENING else None
+        if previously:
+            parts.append(_previously_block(previously))
         parts.append(f"\n## Document: {study['doc_title']}\n\n{study['doc_text']}")
         claim_texts = study.get("claims")
         if claim_texts:
