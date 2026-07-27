@@ -90,3 +90,41 @@ def test_no_previously_block_when_flag_off(imported_bot, session_state_tmp, monk
     monkeypatch.setattr(imported_bot, "SESSION_OPENING", False)
     prompt = imported_bot.build_system_instruction(study={**_DOC, "previously": _PREV_PARSED})
     assert "# Where you left off" not in prompt
+
+
+import hashlib
+
+# Captured from `main` BEFORE any code change — `bot.static_prompt_hash(study=True)`
+# on the current tree — and cross-checked against the prompt_hash of real study
+# rows in cost-log.jsonl (both 2026-07-26 sessions carry this exact value). Pinned
+# as a LITERAL, not recomputed from the constants: an accidental byte change to
+# STUDY_BASE_INSTRUCTION/BREVITY/STUDY reminders must break this test loudly rather
+# than silently breaking continuity with every historical ledger row.
+PRE_CHANGE_STUDY_HASH = "4b937a122fd6b7a5297061be1d853e03833214a66de18491af667cbf13b5a3b0"
+
+
+def test_flag_off_study_hash_equals_pre_change_value(imported_bot, monkeypatch):
+    monkeypatch.setattr(imported_bot, "SESSION_OPENING", False)
+    # Equality against the LITERAL is the continuity guard (not a recomputation).
+    assert imported_bot.static_prompt_hash(study=True) == PRE_CHANGE_STUDY_HASH
+
+
+def test_flag_on_study_hash_differs_and_includes_kickoff(imported_bot, monkeypatch):
+    monkeypatch.setattr(imported_bot, "SESSION_OPENING", True)
+    on_expected = hashlib.sha256(
+        (imported_bot.STUDY_BASE_INSTRUCTION_WITH_OPENING
+         + imported_bot.BREVITY_REMINDER
+         + imported_bot.STUDY_REMINDER
+         + imported_bot.STUDY_KICKOFF_MESSAGE).encode("utf-8")
+    ).hexdigest()
+    got = imported_bot.static_prompt_hash(study=True)
+    assert got == on_expected               # flag-on folds in the new base + kickoff
+    assert got != PRE_CHANGE_STUDY_HASH      # and is distinct from the historical hash
+
+
+def test_regular_mode_hash_unaffected_by_flag(imported_bot, monkeypatch):
+    monkeypatch.setattr(imported_bot, "SESSION_OPENING", True)
+    on = imported_bot.static_prompt_hash(study=False)
+    monkeypatch.setattr(imported_bot, "SESSION_OPENING", False)
+    off = imported_bot.static_prompt_hash(study=False)
+    assert on == off  # non-study mode is untouched by session-opening

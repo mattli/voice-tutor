@@ -656,7 +656,17 @@ def static_prompt_hash(study: bool) -> str:
     changes the hash, so a prompt change is traceable across sessions.
     """
     if study:
-        static = STUDY_BASE_INSTRUCTION + BREVITY_REMINDER + STUDY_REMINDER
+        if SESSION_OPENING:
+            static = (
+                STUDY_BASE_INSTRUCTION_WITH_OPENING
+                + BREVITY_REMINDER
+                + STUDY_REMINDER
+                + STUDY_KICKOFF_MESSAGE
+            )
+        else:
+            # Byte-identical to the pre-change input — preserves the historical
+            # hash for flag-off sessions. Do NOT add the kickoff here.
+            static = STUDY_BASE_INSTRUCTION + BREVITY_REMINDER + STUDY_REMINDER
     else:
         static = BASE_INSTRUCTION + (WIKI_TAGLINE if WIKI_ENABLED else "") + BREVITY_REMINDER
     return hashlib.sha256(static.encode("utf-8")).hexdigest()
