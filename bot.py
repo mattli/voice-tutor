@@ -11,6 +11,7 @@ import anthropic
 
 import claims
 import documents
+import study_history
 import wiki
 from usage_ledger import UsageLedger
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
@@ -714,10 +715,16 @@ async def bot(runner_args):
             print(f"[bot] claim map ready: {len(claim_texts)} claims", flush=True)
         else:
             print("[bot] claim map not ready; study session runs without steering", flush=True)
+        previously = None
+        if SESSION_OPENING:
+            previously = study_history.previous_session_recap(
+                study_meta["document_id"], study_meta["session_id"]
+            )
         study_arg = {
             "doc_title": study_meta["doc_title"],
             "doc_text": study_meta["doc_text"],
             "claims": claim_texts,
+            "previously": previously,
         }
 
     system_instruction = build_system_instruction(study=study_arg)
@@ -928,7 +935,10 @@ async def bot(runner_args):
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
-        context.add_message({"role": "user", "content": "Say hello and introduce yourself briefly."})
+        context.add_message({
+            "role": "user",
+            "content": kickoff_message(study=study_meta is not None),
+        })
         await task.queue_frames([LLMRunFrame()])
 
     @transport.event_handler("on_client_disconnected")
