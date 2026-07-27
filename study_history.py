@@ -40,3 +40,43 @@ def parse_recap_sections(text: str) -> dict:
         return {"fallback_text": text[:_FALLBACK_MAX_CHARS]}
     open_threads = _section_bullets(text, "Open threads")
     return {"covered": covered, "open_threads": open_threads}
+
+
+def previous_session_recap(document_id, exclude_session_id):
+    """The newest prior study session's parsed recap for ``document_id``, or None.
+
+    Newest-only, no walk-back: if the single newest qualifying session has no
+    recap artifact, return None rather than an older session's recap. A stale
+    "last time we covered X" is worse than no recap.
+    """
+    path = COST_LOG_JSONL_PATH
+    if not path.exists():
+        return None
+
+    best_start = None
+    best_sid = None
+    with path.open() as f:
+        for line in f:
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("kind") != "session" or entry.get("mode") != "study":
+                continue
+            if entry.get("document_id") != document_id:
+                continue
+            sid = entry.get("session_id")
+            if sid is None or sid == exclude_session_id:
+                continue
+            start = entry.get("session_start") or ""
+            if best_start is None or start > best_start:
+                best_start, best_sid = start, sid
+
+    if best_sid is None:
+        return None
+    artifact = ARTIFACTS_DIR / f"{best_sid}.md"
+    if not artifact.exists():
+        return None  # newest-only: do not walk back to an older recap
+    return parse_recap_sections(artifact.read_text())

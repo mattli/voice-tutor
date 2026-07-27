@@ -40,3 +40,81 @@ def test_unparseable_returns_truncated_fallback():
     out = sh.parse_recap_sections(text)
     assert out == {"fallback_text": "x" * 1000}
     assert "covered" not in out
+
+
+import json
+
+_RECAP_TEXT = (
+    "# Study session — Doc\n\n## What we covered\n- Alpha\n- Beta\n\n"
+    "## Open threads\n- Gamma\n"
+)
+
+
+def _row(session_id, document_id, session_start, mode="study", kind="session"):
+    return json.dumps({
+        "kind": kind, "mode": mode, "session_id": session_id,
+        "document_id": document_id, "session_start": session_start,
+    })
+
+
+def _seed(ledger, artifacts, rows, recaps):
+    ledger.write_text("\n".join(rows) + "\n")
+    for sid, text in recaps.items():
+        (artifacts / f"{sid}.md").write_text(text)
+
+
+def test_returns_newest_prior_recap_parsed(study_history_tmp):
+    ledger, artifacts = study_history_tmp
+    _seed(
+        ledger, artifacts,
+        rows=[
+            _row("s-old", "doc-1", "2026-07-20T10:00:00"),
+            _row("s-new", "doc-1", "2026-07-25T10:00:00"),
+        ],
+        recaps={"s-old": "OLD", "s-new": _RECAP_TEXT},
+    )
+    out = sh.previous_session_recap("doc-1", exclude_session_id="s-current")
+    assert out == {"covered": ["Alpha", "Beta"], "open_threads": ["Gamma"]}
+
+
+def test_first_session_returns_none(study_history_tmp):
+    ledger, artifacts = study_history_tmp
+    _seed(ledger, artifacts, rows=[_row("s-other", "doc-OTHER", "2026-07-25T10:00:00")],
+          recaps={"s-other": _RECAP_TEXT})
+    assert sh.previous_session_recap("doc-1", exclude_session_id="s-current") is None
+
+
+def test_newest_missing_artifact_returns_none_no_walkback(study_history_tmp):
+    ledger, artifacts = study_history_tmp
+    # Newest (s-new) has NO artifact; older (s-old) DOES. Must NOT walk back.
+    _seed(
+        ledger, artifacts,
+        rows=[
+            _row("s-old", "doc-1", "2026-07-20T10:00:00"),
+            _row("s-new", "doc-1", "2026-07-25T10:00:00"),
+        ],
+        recaps={"s-old": _RECAP_TEXT},  # only the OLD one has a recap
+    )
+    assert sh.previous_session_recap("doc-1", exclude_session_id="s-current") is None
+
+
+def test_excludes_current_session(study_history_tmp):
+    ledger, artifacts = study_history_tmp
+    _seed(ledger, artifacts, rows=[_row("s-current", "doc-1", "2026-07-25T10:00:00")],
+          recaps={"s-current": _RECAP_TEXT})
+    assert sh.previous_session_recap("doc-1", exclude_session_id="s-current") is None
+
+
+def test_ignores_non_session_and_non_study_rows(study_history_tmp):
+    ledger, artifacts = study_history_tmp
+    _seed(
+        ledger, artifacts,
+        rows=[
+            _row("s-art", "doc-1", "2026-07-26T10:00:00", kind="artifact"),
+            _row("s-open", "doc-1", "2026-07-26T09:00:00", mode="open"),
+            _row("s-real", "doc-1", "2026-07-24T10:00:00"),
+        ],
+        recaps={"s-art": "X", "s-open": "Y", "s-real": _RECAP_TEXT},
+    )
+    out = sh.previous_session_recap("doc-1", exclude_session_id="s-current")
+    assert out == {"covered": ["Alpha", "Beta"], "open_threads": ["Gamma"]}
