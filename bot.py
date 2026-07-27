@@ -299,6 +299,50 @@ STUDY_BASE_INSTRUCTION = (
     "don't work."
 )
 
+# The passive opener the session-aware behavior replaces. Copied VERBATIM from
+# STUDY_BASE_INSTRUCTION above — if that string is reworded, update this too or
+# the module-level assert below will fire at import.
+_PASSIVE_OPENER_LINE = (
+    "Help them engage actively — ask what they want to focus on, explain "
+    "concepts when asked, surface connections, push back when their "
+    "understanding is shaky, and let them lead the direction."
+)
+
+# Replacement: the same engagement sentence minus the passive opener, then the
+# new "## Opening the session" section (first wording; tune by ear post-ship).
+_OPENING_SECTION = (
+    "Help them engage actively — explain concepts when asked, surface "
+    "connections, push back when their understanding is shaky, and let them "
+    "lead the direction once the session is underway.\n\n"
+    "## Opening the session\n"
+    "Do NOT open with a generic greeting or an open-ended \"what do you want "
+    "to focus on?\". Open with orientation, in one short spoken turn:\n"
+    "- If there is NO \"Where you left off\" section below, this is a first "
+    "session. Give a one-breath, high-level lay-of-the-land of what this "
+    "document covers (two to four beats, synthesized from the document and "
+    "your private claim map — never recite the map), then propose starting "
+    "with the foundations and building up, then invite them to redirect "
+    "(\"…sound good, or is there something specific you want to start "
+    "with?\").\n"
+    "- If the user declines your proposed starting point, offer two or three "
+    "concrete alternative areas drawn from the claim map — the map is your "
+    "menu — rather than asking an open-ended question.\n"
+    "- If there IS a \"Where you left off\" section below, this is a returning "
+    "session. Briefly recap what was covered last time and what was left "
+    "open, then ask whether they want to pick up where they left off or "
+    "revisit something first — and let them choose. Do not push a next step.\n"
+    "Keep the opening to a few sentences — this is voice — then follow their "
+    "lead."
+)
+
+STUDY_BASE_INSTRUCTION_WITH_OPENING = STUDY_BASE_INSTRUCTION.replace(
+    _PASSIVE_OPENER_LINE, _OPENING_SECTION
+)
+assert STUDY_BASE_INSTRUCTION_WITH_OPENING != STUDY_BASE_INSTRUCTION, (
+    "_PASSIVE_OPENER_LINE did not match STUDY_BASE_INSTRUCTION — the opening "
+    "section was not injected. Re-copy the line verbatim from the base."
+)
+
 # Hidden first-turn trigger. The default produces a generic greeting; the study
 # variant (flag ON) triggers the "Opening the session" behavior in the study base.
 DEFAULT_KICKOFF_MESSAGE = "Say hello and introduce yourself briefly."
@@ -532,7 +576,8 @@ def build_system_instruction(study: dict | None = None) -> str:
     profile = load_profile()
 
     if study is not None:
-        parts = [STUDY_BASE_INSTRUCTION]
+        base = STUDY_BASE_INSTRUCTION_WITH_OPENING if SESSION_OPENING else STUDY_BASE_INSTRUCTION
+        parts = [base]
         if profile:
             parts.append(f"\n## About the person you're talking to\n\n{profile}")
         memory = load_memory()
