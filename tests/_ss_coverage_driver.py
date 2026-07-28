@@ -38,32 +38,34 @@ def tmp_consts(tmp_path, monkeypatch):
     root = tmp_path / ".voice-tutor"
     monkeypatch.setattr(ss, "VOICE_TUTOR_DIR", root)
     monkeypatch.setattr(ss, "TRANSCRIPTS_DIR", root / "transcripts")
-    monkeypatch.setattr(ss, "PROFILE_PATH", root / "profile.md")
-    monkeypatch.setattr(ss, "MEMORY_PATH", root / "memory.md")
+    monkeypatch.setattr(ss, "PROFILES_DIR", root / "profiles")
+    monkeypatch.setattr(ss, "MEMORY_DIR", root / "memory")
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 def test_cover_load_profile_both_branches(tmp_consts):
-    assert ss.load_profile() == ""
-    ss.PROFILE_PATH.write_text("p")
-    assert ss.load_profile() == "p"
+    assert ss.load_profile("matt") == ""
+    ss.profile_path("matt").parent.mkdir(parents=True, exist_ok=True)
+    ss.profile_path("matt").write_text("p")
+    assert ss.load_profile("matt") == "p"
 
 
 def test_cover_load_memory_both_branches(tmp_consts):
-    assert ss.load_memory() == ""
-    ss.MEMORY_PATH.write_text("m")
-    assert ss.load_memory() == "m"
+    assert ss.load_memory("matt") == ""
+    ss.memory_path("matt").parent.mkdir(parents=True, exist_ok=True)
+    ss.memory_path("matt").write_text("m")
+    assert ss.load_memory("matt") == "m"
 
 
 def test_cover_append_to_memory_both_branches(tmp_consts):
     # created branch
-    ss.append_to_memory({"session_start": "2026-04-14T09:05:00", "turns": []}, "x")
-    first = ss.MEMORY_PATH.read_text()
+    ss.append_to_memory("matt", {"session_start": "2026-04-14T09:05:00", "turns": []}, "x")
+    first = ss.memory_path("matt").read_text()
     assert first.startswith("# Memory")
     # append branch
-    ss.append_to_memory({"session_start": "2026-04-14T09:05:00", "turns": []}, "y")
-    second = ss.MEMORY_PATH.read_text()
+    ss.append_to_memory("matt", {"session_start": "2026-04-14T09:05:00", "turns": []}, "y")
+    second = ss.memory_path("matt").read_text()
     assert second.startswith(first)
     assert second.count("# Memory") == 1
 
@@ -92,14 +94,15 @@ def test_cover_format_full_transcript_block():
 
 
 def test_cover_load_most_recent_all_branches(tmp_consts):
+    user_dir = ss.TRANSCRIPTS_DIR / "matt"
     # missing dir -> None
-    assert ss.load_most_recent_transcript_block() is None
+    assert ss.load_most_recent_transcript_block("matt") is None
     # dir exists, no eligible files (.usage.json only) -> None
-    ss.TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-    (ss.TRANSCRIPTS_DIR / "x.usage.json").write_text("{}")
-    assert ss.load_most_recent_transcript_block() is None
+    user_dir.mkdir(parents=True, exist_ok=True)
+    (user_dir / "x.usage.json").write_text("{}")
+    assert ss.load_most_recent_transcript_block("matt") is None
     # populated -> newest formatted block
     sample = {"session_start": "2026-04-14T09:05:00", "turns": [{"role": "assistant", "content": "Hi"}]}
-    (ss.TRANSCRIPTS_DIR / "2026-04-14.json").write_text(json.dumps(sample))
-    out = ss.load_most_recent_transcript_block()
+    (user_dir / "2026-04-14.json").write_text(json.dumps(sample))
+    out = ss.load_most_recent_transcript_block("matt")
     assert out.startswith("## Session from April 14, 2026 at 9:05am (most recent)")

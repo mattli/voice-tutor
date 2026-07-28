@@ -372,7 +372,7 @@ def cost_audit_log_tmp(tmp_path, monkeypatch):
 def session_state_tmp(tmp_path, monkeypatch):
     """Hermetically redirect session_state's module-level Path constants to tmp.
 
-    Patches VOICE_TUTOR_DIR / TRANSCRIPTS_DIR / PROFILE_PATH / MEMORY_PATH on the
+    Patches VOICE_TUTOR_DIR / TRANSCRIPTS_DIR / PROFILES_DIR / MEMORY_DIR on the
     session_state module (the namespace the moved helpers close over). Guards that
     the real ~/.voice-tutor directory is never created or mutated.
 
@@ -387,8 +387,8 @@ def session_state_tmp(tmp_path, monkeypatch):
     root = tmp_path / ".voice-tutor"
     monkeypatch.setattr(ss, "VOICE_TUTOR_DIR", root)
     monkeypatch.setattr(ss, "TRANSCRIPTS_DIR", root / "transcripts")
-    monkeypatch.setattr(ss, "PROFILE_PATH", root / "profile.md")
-    monkeypatch.setattr(ss, "MEMORY_PATH", root / "memory.md")
+    monkeypatch.setattr(ss, "PROFILES_DIR", root / "profiles")
+    monkeypatch.setattr(ss, "MEMORY_DIR", root / "memory")
 
     yield root
 

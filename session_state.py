@@ -12,14 +12,21 @@ from pathlib import Path
 
 VOICE_TUTOR_DIR = Path.home() / ".voice-tutor"
 TRANSCRIPTS_DIR = VOICE_TUTOR_DIR / "transcripts"
-PROFILE_PATH = VOICE_TUTOR_DIR / "profile.md"
-MEMORY_PATH = VOICE_TUTOR_DIR / "memory.md"
+PROFILES_DIR = VOICE_TUTOR_DIR / "profiles"
+MEMORY_DIR = VOICE_TUTOR_DIR / "memory"
 
 
-def load_profile() -> str:
-    if PROFILE_PATH.exists():
-        return PROFILE_PATH.read_text()
-    return ""
+def profile_path(user_id: str) -> Path:
+    return PROFILES_DIR / f"{Path(user_id).name}.md"
+
+
+def memory_path(user_id: str) -> Path:
+    return MEMORY_DIR / f"{Path(user_id).name}.md"
+
+
+def load_profile(user_id: str) -> str:
+    p = profile_path(user_id)
+    return p.read_text() if p.exists() else ""
 
 
 def _format_memory_date(iso_ts: str) -> str:
@@ -29,23 +36,24 @@ def _format_memory_date(iso_ts: str) -> str:
     return f"{dt.strftime('%B')} {dt.day}, {dt.year} — {hour12}:{dt.minute:02d} {ampm}"
 
 
-def append_to_memory(transcript: dict, summary_text: str):
+def append_to_memory(user_id: str, transcript: dict, summary_text: str):
+    p = memory_path(user_id)
     header = f"## {_format_memory_date(transcript['session_start'])}\n"
     entry = header + summary_text.strip() + "\n\n"
-    if not MEMORY_PATH.exists():
-        MEMORY_PATH.write_text(
+    if not p.exists():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
             "# Memory — what we've discussed\n\n"
             "One section per session, append-only. Summaries are lifted from "
             "the `.summary.md` sidecar written alongside each transcript.\n\n"
         )
-    with MEMORY_PATH.open("a") as f:
+    with p.open("a") as f:
         f.write(entry)
 
 
-def load_memory() -> str:
-    if not MEMORY_PATH.exists():
-        return ""
-    return MEMORY_PATH.read_text()
+def load_memory(user_id: str) -> str:
+    p = memory_path(user_id)
+    return p.read_text() if p.exists() else ""
 
 
 def _format_session_time(iso_ts: str) -> str:
@@ -66,15 +74,16 @@ def _format_full_transcript_block(transcript: dict, header_suffix: str = "") -> 
     return header + "\n".join(lines)
 
 
-def load_most_recent_transcript_block() -> str | None:
+def load_most_recent_transcript_block(user_id: str) -> str | None:
     """Return the most recent full-transcript block, or None if no transcripts exist.
 
     Older sessions are no longer loaded here — they accumulate in memory.md instead.
     """
-    if not TRANSCRIPTS_DIR.exists():
+    user_dir = TRANSCRIPTS_DIR / Path(user_id).name
+    if not user_dir.exists():
         return None
     files = sorted(
-        (f for f in TRANSCRIPTS_DIR.glob("*.json") if not f.name.endswith(".usage.json")),
+        (f for f in user_dir.glob("*.json") if not f.name.endswith(".usage.json")),
         reverse=True,
     )
     if not files:

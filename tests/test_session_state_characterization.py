@@ -59,15 +59,15 @@ def test_format_full_transcript_block_empty_turns(deterministic_locale):
 
 
 def test_load_profile_present(session_state_tmp):
-    ss.PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ss.PROFILE_PATH.write_text("I am Matt.\n")
-    assert ss.load_profile() == "I am Matt.\n"
+    ss.profile_path("matt").parent.mkdir(parents=True, exist_ok=True)
+    ss.profile_path("matt").write_text("I am Matt.\n")
+    assert ss.load_profile("matt") == "I am Matt.\n"
 
 
 def test_load_memory_present(session_state_tmp):
-    ss.MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ss.MEMORY_PATH.write_text("# Memory\n\nstuff\n")
-    assert ss.load_memory() == "# Memory\n\nstuff\n"
+    ss.memory_path("matt").parent.mkdir(parents=True, exist_ok=True)
+    ss.memory_path("matt").write_text("# Memory\n\nstuff\n")
+    assert ss.load_memory("matt") == "# Memory\n\nstuff\n"
 
 
 # ---------------------------------------------------------------------------
@@ -75,34 +75,34 @@ def test_load_memory_present(session_state_tmp):
 # ---------------------------------------------------------------------------
 # (1) load_profile: exists vs absent
 def test_load_profile_absent(session_state_tmp):
-    assert not ss.PROFILE_PATH.exists()
-    assert ss.load_profile() == ""
+    assert not ss.profile_path("matt").exists()
+    assert ss.load_profile("matt") == ""
 
 
 def test_load_profile_exists_branch(session_state_tmp):
-    ss.PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ss.PROFILE_PATH.write_text("hello")
-    assert ss.load_profile() == "hello"
+    ss.profile_path("matt").parent.mkdir(parents=True, exist_ok=True)
+    ss.profile_path("matt").write_text("hello")
+    assert ss.load_profile("matt") == "hello"
 
 
 # (2) load_memory: absent vs present
 def test_load_memory_absent(session_state_tmp):
-    assert not ss.MEMORY_PATH.exists()
-    assert ss.load_memory() == ""
+    assert not ss.memory_path("matt").exists()
+    assert ss.load_memory("matt") == ""
 
 
 def test_load_memory_present_branch(session_state_tmp):
-    ss.MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ss.MEMORY_PATH.write_text("content here")
-    assert ss.load_memory() == "content here"
+    ss.memory_path("matt").parent.mkdir(parents=True, exist_ok=True)
+    ss.memory_path("matt").write_text("content here")
+    assert ss.load_memory("matt") == "content here"
 
 
 # (3) append_to_memory: file-created (header seeded) vs append-only (no re-header)
 def test_append_to_memory_creates_file_with_header(session_state_tmp, deterministic_locale):
-    ss.MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    assert not ss.MEMORY_PATH.exists()
-    ss.append_to_memory(SAMPLE_TRANSCRIPT, "- discussed X")
-    text = ss.MEMORY_PATH.read_text()
+    ss.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    assert not ss.memory_path("matt").exists()
+    ss.append_to_memory("matt", SAMPLE_TRANSCRIPT, "- discussed X")
+    text = ss.memory_path("matt").read_text()
     # Seeded header IS written.
     assert text.startswith("# Memory — what we've discussed\n\n")
     assert "One section per session, append-only." in text
@@ -112,11 +112,11 @@ def test_append_to_memory_creates_file_with_header(session_state_tmp, determinis
 
 
 def test_append_to_memory_append_only_no_reheader(session_state_tmp, deterministic_locale):
-    ss.MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ss.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
     # Pre-existing memory file (already has a header of some form).
-    ss.MEMORY_PATH.write_text("PREEXISTING\n")
-    ss.append_to_memory(SAMPLE_TRANSCRIPT, "  spaced entry  ")
-    text = ss.MEMORY_PATH.read_text()
+    ss.memory_path("matt").write_text("PREEXISTING\n")
+    ss.append_to_memory("matt", SAMPLE_TRANSCRIPT, "  spaced entry  ")
+    text = ss.memory_path("matt").read_text()
     # The seeded header is NOT re-written; original content preserved, new appended.
     assert text.startswith("PREEXISTING\n")
     assert "# Memory — what we've discussed" not in text
@@ -127,29 +127,31 @@ def test_append_to_memory_append_only_no_reheader(session_state_tmp, determinist
 # (4) load_most_recent_transcript_block: missing dir / no eligible files / populated
 def test_load_most_recent_missing_dir(session_state_tmp):
     assert not ss.TRANSCRIPTS_DIR.exists()
-    assert ss.load_most_recent_transcript_block() is None
+    assert ss.load_most_recent_transcript_block("matt") is None
 
 
 def test_load_most_recent_no_eligible_files(session_state_tmp):
-    ss.TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+    user_dir = ss.TRANSCRIPTS_DIR / "matt"
+    user_dir.mkdir(parents=True, exist_ok=True)
     # Only a .usage.json file (excluded by the filter) -> None.
-    (ss.TRANSCRIPTS_DIR / "2026-04-14.usage.json").write_text("{}")
-    assert ss.load_most_recent_transcript_block() is None
+    (user_dir / "2026-04-14.usage.json").write_text("{}")
+    assert ss.load_most_recent_transcript_block("matt") is None
 
 
 def test_load_most_recent_selects_newest_and_excludes_usage(session_state_tmp, deterministic_locale):
-    ss.TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+    user_dir = ss.TRANSCRIPTS_DIR / "matt"
+    user_dir.mkdir(parents=True, exist_ok=True)
     older = {
         "session_start": "2026-04-10T08:00:00",
         "turns": [{"role": "user", "content": "old"}],
     }
     newer = SAMPLE_TRANSCRIPT
-    (ss.TRANSCRIPTS_DIR / "2026-04-10-080000.json").write_text(json.dumps(older))
-    (ss.TRANSCRIPTS_DIR / "2026-04-14-090500.json").write_text(json.dumps(newer))
+    (user_dir / "2026-04-10-080000.json").write_text(json.dumps(older))
+    (user_dir / "2026-04-14-090500.json").write_text(json.dumps(newer))
     # A .usage.json that sorts last but must be excluded.
-    (ss.TRANSCRIPTS_DIR / "2026-04-20.usage.json").write_text(json.dumps(newer))
+    (user_dir / "2026-04-20.usage.json").write_text(json.dumps(newer))
 
-    result = ss.load_most_recent_transcript_block()
+    result = ss.load_most_recent_transcript_block("matt")
     expected = (
         "## Session from April 14, 2026 at 9:05am (most recent)\n"
         "  You: Hi\n"
@@ -197,7 +199,7 @@ def test_format_session_time_bad_iso_raises():
 # append_to_memory / _format_full_transcript_block error path on missing keys.
 def test_append_to_memory_missing_session_start_raises(session_state_tmp):
     with pytest.raises(KeyError):
-        ss.append_to_memory({"turns": []}, "text")
+        ss.append_to_memory("matt", {"turns": []}, "text")
 
 
 def test_format_full_transcript_block_missing_turns_raises(deterministic_locale):
@@ -226,38 +228,39 @@ def test_dual_import_pure_helpers(helper, imported_bot, deterministic_locale):
 
 def test_dual_import_load_profile(imported_bot, session_state_tmp):
     import session_state
-    ss.PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ss.PROFILE_PATH.write_text("profile body")
-    # Both import paths observe the patched session_state.PROFILE_PATH.
-    assert imported_bot.load_profile() == "profile body"
-    assert session_state.load_profile() == "profile body"
-    assert imported_bot.load_profile() == session_state.load_profile()
+    ss.profile_path("matt").parent.mkdir(parents=True, exist_ok=True)
+    ss.profile_path("matt").write_text("profile body")
+    # Both import paths observe the patched session_state.PROFILES_DIR.
+    assert imported_bot.load_profile("matt") == "profile body"
+    assert session_state.load_profile("matt") == "profile body"
+    assert imported_bot.load_profile("matt") == session_state.load_profile("matt")
 
 
 def test_dual_import_load_memory(imported_bot, session_state_tmp):
     import session_state
-    ss.MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ss.MEMORY_PATH.write_text("mem body")
-    assert imported_bot.load_memory() == session_state.load_memory() == "mem body"
+    ss.memory_path("matt").parent.mkdir(parents=True, exist_ok=True)
+    ss.memory_path("matt").write_text("mem body")
+    assert imported_bot.load_memory("matt") == session_state.load_memory("matt") == "mem body"
 
 
 def test_dual_import_load_most_recent(imported_bot, session_state_tmp, deterministic_locale):
     import session_state
-    ss.TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-    (ss.TRANSCRIPTS_DIR / "2026-04-14-090500.json").write_text(json.dumps(SAMPLE_TRANSCRIPT))
-    assert imported_bot.load_most_recent_transcript_block() == \
-        session_state.load_most_recent_transcript_block()
+    user_dir = ss.TRANSCRIPTS_DIR / "matt"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    (user_dir / "2026-04-14-090500.json").write_text(json.dumps(SAMPLE_TRANSCRIPT))
+    assert imported_bot.load_most_recent_transcript_block("matt") == \
+        session_state.load_most_recent_transcript_block("matt")
 
 
 def test_dual_import_append_to_memory(imported_bot, session_state_tmp, deterministic_locale):
     import session_state
-    ss.MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ss.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
     # Call via bot path.
-    imported_bot.append_to_memory(SAMPLE_TRANSCRIPT, "via bot")
-    text_after_bot = ss.MEMORY_PATH.read_text()
+    imported_bot.append_to_memory("matt", SAMPLE_TRANSCRIPT, "via bot")
+    text_after_bot = ss.memory_path("matt").read_text()
     # Call via session_state path (append).
-    session_state.append_to_memory(SAMPLE_TRANSCRIPT, "via ss")
-    text_after_ss = ss.MEMORY_PATH.read_text()
+    session_state.append_to_memory("matt", SAMPLE_TRANSCRIPT, "via ss")
+    text_after_ss = ss.memory_path("matt").read_text()
     assert text_after_ss.startswith(text_after_bot)
     assert "via bot" in text_after_ss and "via ss" in text_after_ss
 
@@ -266,7 +269,7 @@ def test_dual_import_patched_const_observed_by_both(imported_bot, session_state_
     """Both import paths' HELPERS read session_state's patched module globals.
 
     The moved functions close over session_state's namespace (their __globals__),
-    so patching session_state.PROFILE_PATH is observed identically whether the
+    so patching session_state.PROFILES_DIR is observed identically whether the
     helper is reached via bot.load_profile or session_state.load_profile — proving
     the relocation preserved the global-resolution behavior across both paths.
     """
@@ -275,9 +278,32 @@ def test_dual_import_patched_const_observed_by_both(imported_bot, session_state_
     # The re-exported helper objects are identical (c6).
     assert imported_bot.load_profile is session_state.load_profile
     # And they resolve the PATCHED session_state global, not a stale copy.
-    ss.PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ss.PROFILE_PATH.write_text("patched-observed")
-    assert imported_bot.load_profile() == "patched-observed"
-    assert session_state.load_profile() == "patched-observed"
-    # session_state.PROFILE_PATH is the patched tmp path.
-    assert session_state.PROFILE_PATH == session_state_tmp / "profile.md"
+    ss.profile_path("matt").parent.mkdir(parents=True, exist_ok=True)
+    ss.profile_path("matt").write_text("patched-observed")
+    assert imported_bot.load_profile("matt") == "patched-observed"
+    assert session_state.load_profile("matt") == "patched-observed"
+    # session_state.PROFILES_DIR is the patched tmp path.
+    assert session_state.PROFILES_DIR == session_state_tmp / "profiles"
+
+
+# ---------------------------------------------------------------------------
+# per-user namespacing (Task 6): profile/memory/transcripts scoped by user_id
+# ---------------------------------------------------------------------------
+def test_profile_memory_are_user_scoped(session_state_tmp):
+    ss.PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    ss.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    ss.profile_path("matt").write_text("I am Matt.\n")
+    ss.memory_path("matt").write_text("# Memory\n\nmatt stuff\n")
+
+    assert ss.load_profile("matt") == "I am Matt.\n"
+    assert ss.load_memory("matt") == "# Memory\n\nmatt stuff\n"
+    # Mirror image: a different user sees empty, never matt's data.
+    assert ss.load_profile("sarah") == ""
+    assert ss.load_memory("sarah") == ""
+
+
+def test_append_to_memory_is_user_scoped(session_state_tmp, deterministic_locale):
+    ss.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    ss.append_to_memory("sarah", {"session_start": "2026-07-27T09:05:00", "turns": []}, "- s said x")
+    assert ss.memory_path("sarah").exists()
+    assert not ss.memory_path("matt").exists()  # write landed only in sarah's file
