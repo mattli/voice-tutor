@@ -196,8 +196,6 @@ class UsageAccumulator(BaseObserver):
         return self.ledger.summary(session_duration_sec)
 
 from session_state import (
-    MEMORY_PATH,
-    PROFILE_PATH,
     TRANSCRIPTS_DIR,
     VOICE_TUTOR_DIR,
     _format_full_transcript_block,
@@ -460,7 +458,7 @@ No preamble, no trailing prose.
 """
 
 
-def generate_session_summary(stem: str, transcript: dict) -> dict | None:
+def generate_session_summary(user_id: str, stem: str, transcript: dict) -> dict | None:
     prompt = SUMMARY_PROMPT.format(transcript_json=json.dumps(transcript, indent=2))
     try:
         client = anthropic.Anthropic()
@@ -473,13 +471,14 @@ def generate_session_summary(stem: str, transcript: dict) -> dict | None:
     except Exception as e:
         print(f"[session-summary] failed: {e}", file=sys.stderr, flush=True)
         return None
-    out_path = TRANSCRIPTS_DIR / f"{stem}.summary.md"
+    out_path = TRANSCRIPTS_DIR / user_id / f"{stem}.summary.md"
     out_path.write_text(text + "\n")
     print(f"[session-summary] wrote {out_path}", file=sys.stderr, flush=True)
     return {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
 
 
 def generate_session_analysis(
+    user_id: str,
     stem: str,
     transcript: dict,
     summary: dict,
@@ -504,14 +503,16 @@ def generate_session_analysis(
         print(f"[session-analysis] failed: {e}", file=sys.stderr, flush=True)
         return None
     header = f"# Session Analysis — {stem}\n\n"
-    out_path = SESSION_ANALYSIS_DIR / session_analysis_filename(session_start, session_id)
+    analysis_dir = SESSION_ANALYSIS_DIR / user_id
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    out_path = analysis_dir / session_analysis_filename(session_start, session_id)
     out_path.write_text(header + analysis)
     print(f"[session-analysis] wrote {out_path}", file=sys.stderr, flush=True)
     return {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
 
 
-async def generate_artifact(session_id: str, study_meta: dict, transcript: dict, duration_sec: float):
-    """Fire-and-forget Haiku call writing ~/.voice-tutor/artifacts/<session_id>.md.
+async def generate_artifact(user_id: str, session_id: str, study_meta: dict, transcript: dict, duration_sec: float):
+    """Fire-and-forget Haiku call writing ~/.voice-tutor/artifacts/<user_id>/<session_id>.md.
 
     Writes a separate row to session-log.jsonl with kind="artifact" so the cost is
     auditable without retroactively patching the synchronous session row.
@@ -536,8 +537,9 @@ async def generate_artifact(session_id: str, study_meta: dict, transcript: dict,
         print(f"[artifact] failed for session_id={session_id}: {e}", file=sys.stderr, flush=True)
         return
 
-    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = ARTIFACTS_DIR / f"{session_id}.md"
+    user_artifacts_dir = ARTIFACTS_DIR / user_id
+    user_artifacts_dir.mkdir(parents=True, exist_ok=True)
+    out_path = user_artifacts_dir / f"{session_id}.md"
     out_path.write_text(markdown)
     print(f"[artifact] wrote {out_path}", file=sys.stderr, flush=True)
 
@@ -550,6 +552,7 @@ async def generate_artifact(session_id: str, study_meta: dict, transcript: dict,
     row = {
         "kind": "artifact",
         "session_id": session_id,
+        "user_id": user_id,
         "document_id": study_meta["document_id"],
         "input_tokens": in_tok,
         "output_tokens": out_tok,
@@ -596,7 +599,7 @@ def _previously_block(previously: dict) -> str:
     return "\n".join(lines)
 
 
-def build_system_instruction(study: dict | None = None) -> str:
+def build_system_instruction(user_id: str, study: dict | None = None) -> str:
     """Assemble the system prompt.
 
     Regular mode: base + profile + wiki INDEX + memory + most-recent transcript.
@@ -607,15 +610,19 @@ def build_system_instruction(study: dict | None = None) -> str:
     private claim map after the document; when absent/empty (claims not yet
     extracted at session start) the map is simply omitted — the session degrades
     to plain study mode rather than blocking on extraction.
+
+    ``user_id`` is required and scopes every per-user read (profile, memory,
+    most-recent transcript) — the isolation boundary that prevents one user's
+    context from leaking into another's session.
     """
-    profile = load_profile()
+    profile = load_profile(user_id)
 
     if study is not None:
         base = STUDY_BASE_INSTRUCTION_WITH_OPENING if SESSION_OPENING else STUDY_BASE_INSTRUCTION
         parts = [base]
         if profile:
             parts.append(f"\n## About the person you're talking to\n\n{profile}")
-        memory = load_memory()
+        memory = load_memory(user_id)
         if memory:
             parts.append(
                 "\n# Background — Matt's prior topics (reference only if directly relevant to the document)\n\n"
@@ -643,11 +650,11 @@ def build_system_instruction(study: dict | None = None) -> str:
         if wiki_block:
             parts.append(wiki_block)
 
-    memory = load_memory()
+    memory = load_memory(user_id)
     if memory:
         parts.append(f"\n# What we've discussed\n\n{memory}")
 
-    most_recent = load_most_recent_transcript_block()
+    most_recent = load_most_recent_transcript_block(user_id)
     if most_recent:
         parts.append(f"\n# Most recent session\n\n{most_recent}")
 
@@ -690,17 +697,22 @@ async def bot(runner_args):
     )
 
     body = getattr(runner_args, "body", None) or {}
+    user_id = body.get("user_id")  # server-stamped by app.offer()
+    if not user_id:
+        print("[bot] no user_id on session body; refusing (fail closed)", file=sys.stderr, flush=True)
+        return  # fail closed — no session
     document_id = body.get("document_id")
     session_id_override = body.get("session_id")
 
     study_meta: dict | None = None
     if document_id:
-        loaded = documents.load_document(document_id)
+        loaded = documents.load_document(user_id, document_id)
         if loaded is None:
             print(f"[bot] document_id={document_id} not found; falling back to regular mode", file=sys.stderr, flush=True)
         else:
             doc_title, doc_text = loaded
             study_meta = {
+                "user_id": user_id,
                 "document_id": document_id,
                 "doc_title": doc_title,
                 "doc_text": doc_text,
@@ -719,7 +731,7 @@ async def bot(runner_args):
     # study mode rather than blocking the pipeline on a 30-60s live extraction.
     study_arg = None
     if study_meta:
-        cached = claims.load_fresh_claims(study_meta["document_id"], study_meta["doc_text"])
+        cached = claims.load_fresh_claims(user_id, study_meta["document_id"], study_meta["doc_text"])
         claim_texts = [c.claim for c in cached] if cached else None
         if claim_texts:
             print(f"[bot] claim map ready: {len(claim_texts)} claims", flush=True)
@@ -729,7 +741,7 @@ async def bot(runner_args):
         if SESSION_OPENING:
             try:
                 previously = study_history.previous_session_recap(
-                    study_meta["document_id"], study_meta["session_id"]
+                    user_id, study_meta["document_id"], study_meta["session_id"]
                 )
             except Exception:
                 print(
@@ -745,12 +757,13 @@ async def bot(runner_args):
             "previously": previously,
         }
 
-    system_instruction = build_system_instruction(study=study_arg)
+    system_instruction = build_system_instruction(user_id, study=study_arg)
     prompt_hash = static_prompt_hash(study=study_meta is not None)
 
+    user_tx = TRANSCRIPTS_DIR / user_id
     if study_meta:
-        TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-        (TRANSCRIPTS_DIR / f"{study_meta['session_id']}.prompt.txt").write_text(system_instruction)
+        user_tx.mkdir(parents=True, exist_ok=True)
+        (user_tx / f"{study_meta['session_id']}.prompt.txt").write_text(system_instruction)
 
     llm = AnthropicLLMService(
         api_key=os.getenv("ANTHROPIC_API_KEY"),
@@ -823,7 +836,7 @@ async def bot(runner_args):
     def save_transcript():
         if not turns:
             return
-        TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+        user_tx.mkdir(parents=True, exist_ok=True)
         stem = study_meta["session_id"] if study_meta else session_start.strftime("%Y-%m-%d-%H%M%S")
         session_end = datetime.now()
         transcript = {
@@ -832,7 +845,7 @@ async def bot(runner_args):
             "turn_count": len(turns),
             "turns": turns,
         }
-        (TRANSCRIPTS_DIR / f"{stem}.json").write_text(json.dumps(transcript, indent=2))
+        (user_tx / f"{stem}.json").write_text(json.dumps(transcript, indent=2))
 
         summary = usage.summary((session_end - session_start).total_seconds())
 
@@ -842,16 +855,17 @@ async def bot(runner_args):
         post_input = 0
         post_output = 0
         if summary["session_duration_sec"] >= MIN_SUMMARY_DURATION_SEC:
-            u = generate_session_summary(stem, transcript)
+            u = generate_session_summary(user_id, stem, transcript)
             if u:
                 post_input += u["input_tokens"]
                 post_output += u["output_tokens"]
-            summary_path = TRANSCRIPTS_DIR / f"{stem}.summary.md"
+            summary_path = user_tx / f"{stem}.summary.md"
             if summary_path.exists():
-                append_to_memory(transcript, summary_path.read_text())
+                append_to_memory(user_id, transcript, summary_path.read_text())
 
         if summary["session_duration_sec"] >= MIN_ANALYSIS_DURATION_SEC:
             u = generate_session_analysis(
+                user_id,
                 stem,
                 transcript,
                 summary,
@@ -874,7 +888,7 @@ async def bot(runner_args):
         }
         summary["total_cost_usd"] = round(summary["total_cost_usd"] + post_cost, 4)
 
-        (TRANSCRIPTS_DIR / f"{stem}.usage.json").write_text(json.dumps(summary, indent=2))
+        (user_tx / f"{stem}.usage.json").write_text(json.dumps(summary, indent=2))
         mins = summary["session_duration_sec"] / 60
         line = (
             f"Session: {mins:.1f}min · {len(turns)} turns · "
@@ -920,6 +934,7 @@ async def bot(runner_args):
 
         jsonl_entry = {
             "kind": "session",
+            "user_id": user_id,
             "session_id": session_start.strftime("%Y-%m-%dT%H%M%S"),
             "session_start": session_start.isoformat(),
             "session_end": session_end.isoformat(),
@@ -952,6 +967,7 @@ async def bot(runner_args):
 
         if study_meta:
             asyncio.create_task(generate_artifact(
+                user_id=user_id,
                 session_id=study_meta["session_id"],
                 study_meta=study_meta,
                 transcript=transcript,
