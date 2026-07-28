@@ -87,3 +87,41 @@ def list_study_sessions(user_id: str) -> list[dict]:
     # so equal-session_start ties keep their relative order and never raise.
     rows.sort(key=lambda r: r.get("session_start") or "", reverse=True)
     return rows
+
+
+MATT_ONLY_USER = "matt"
+
+
+def session_belongs_to(user_id: str, session_id: str) -> bool:
+    """True iff a session row with this session_id carries this user_id."""
+    path = SESSION_LOG_JSONL_PATH
+    if not path.exists():
+        return False
+    with path.open() as f:
+        for line in f:
+            try:
+                e = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(e, dict) and e.get("kind") == "session" and e.get("session_id") == session_id:
+                return e.get("user_id") == user_id
+    return False
+
+
+def can_view_machine_artifacts(user_id: str) -> bool:
+    """Prompt + analysis + global cost-log are about the MACHINE, not the tester's
+    learning. Only Matt may view them. (The prompt embeds the private claim map,
+    which reading would spoil the steering the validation gate measures.)"""
+    return user_id == MATT_ONLY_USER
+
+
+def redact_telemetry_for_user(telemetry: dict, user_id: str) -> dict:
+    """Strip Matt-only fields from the telemetry composite for non-Matt users so
+    the single endpoint can't leak the analysis/prompt through a side door. The
+    tester keeps their own learning artifacts (recap, cost, memory_append)."""
+    if can_view_machine_artifacts(user_id):
+        return telemetry
+    redacted = dict(telemetry)
+    redacted["analysis"] = None
+    redacted["has_prompt"] = False
+    return redacted

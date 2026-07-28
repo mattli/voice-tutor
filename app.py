@@ -38,6 +38,7 @@ import claims
 import documents
 import identity
 import session_naming
+import session_state
 import sessions
 
 HOST = os.getenv("VOICE_TUTOR_HOST", "0.0.0.0")
@@ -168,17 +169,17 @@ async def rtvi_proxy(
 
 
 @app.post("/api/documents")
-async def upload_document(file: UploadFile):
+async def upload_document(file: UploadFile, user_id: str = Depends(require_user)):
     try:
         raw = await file.read()
-        return documents.save_upload(file.filename or "untitled", raw)
+        return documents.save_upload(user_id, file.filename or "untitled", raw)
     except documents.UploadError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
 
 
 @app.get("/api/documents")
-async def list_documents_route():
-    return await documents.list_documents()
+async def list_documents_route(user_id: str = Depends(require_user)):
+    return await documents.list_documents(user_id)
 
 
 # Claim-map warming. Claim extraction is a 30-60s live LLM call on an uncached
@@ -190,31 +191,34 @@ async def list_documents_route():
 # `_claims_warming` de-dups in-flight extractions. Access is confined to the
 # synchronous (await-free) prologue of prepare_claims and to _warm_claims's
 # terminal discard, so the single-threaded event loop makes check-and-add atomic
-# — no lock needed.
-_claims_warming: set[str] = set()
+# — no lock needed. Keyed by (user_id, doc_id) so two users warming the same
+# doc_id never collide.
+_claims_warming: set[tuple[str, str]] = set()
 
 
-async def _warm_claims(doc_id: str) -> None:
-    """Background task: run get-or-create for ``doc_id`` off the event loop.
+async def _warm_claims(user_id: str, doc_id: str) -> None:
+    """Background task: run get-or-create for ``user_id``'s ``doc_id`` off the event loop.
 
     Extraction (``claims.generate_claims``) is blocking, so it is offloaded to a
     worker thread. The in-flight marker is always cleared, even on failure, so a
     transient extraction error doesn't permanently wedge the doc as "warming".
     """
     try:
-        loaded = documents.load_document(doc_id)
+        loaded = documents.load_document(user_id, doc_id)
         if loaded is None:
             return
         _title, text = loaded
-        await asyncio.to_thread(claims.generate_claims, doc_id, text)
+        await asyncio.to_thread(claims.generate_claims, user_id, doc_id, text)
     except Exception as e:  # extraction is best-effort; a failure just means no map
         print(f"[claims-warm] {doc_id} extraction failed: {e!r}", flush=True)
     finally:
-        _claims_warming.discard(doc_id)
+        _claims_warming.discard((user_id, doc_id))
 
 
 @app.post("/api/documents/{doc_id}/claims/prepare", status_code=202)
-async def prepare_claims(doc_id: str, background_tasks: BackgroundTasks):
+async def prepare_claims(
+    doc_id: str, background_tasks: BackgroundTasks, user_id: str = Depends(require_user)
+):
     """Idempotent, non-blocking warm of ``doc_id``'s claim map.
 
     Returns immediately with a status the caller may ignore (fire-and-forget):
@@ -226,16 +230,16 @@ async def prepare_claims(doc_id: str, background_tasks: BackgroundTasks):
     Safe to call unconditionally on every doc selection.
     """
     safe_id = Path(doc_id).name  # path-traversal guard, mirrors other routes
-    loaded = documents.load_document(safe_id)
+    loaded = documents.load_document(user_id, safe_id)
     if loaded is None:
         return {"status": "unknown"}
     _title, text = loaded
-    if claims.load_fresh_claims(safe_id, text) is not None:
+    if claims.load_fresh_claims(user_id, safe_id, text) is not None:
         return {"status": "cached"}
-    if safe_id in _claims_warming:
+    if (user_id, safe_id) in _claims_warming:
         return {"status": "in_flight"}
-    _claims_warming.add(safe_id)
-    background_tasks.add_task(_warm_claims, safe_id)
+    _claims_warming.add((user_id, safe_id))
+    background_tasks.add_task(_warm_claims, user_id, safe_id)
     return {"status": "warming"}
 
 
@@ -269,26 +273,26 @@ async def study_page(request: Request, u: str | None = Query(None)):
 VOICE_TUTOR_DIR = Path.home() / ".voice-tutor"
 ARTIFACTS_DIR = VOICE_TUTOR_DIR / "artifacts"
 TRANSCRIPTS_DIR = VOICE_TUTOR_DIR / "transcripts"
-MEMORY_PATH = VOICE_TUTOR_DIR / "memory.md"
-PROFILE_PATH = VOICE_TUTOR_DIR / "profile.md"
 SESSION_ANALYSES_DIR = Path.home() / "second-brain" / "products" / "voice-tutor" / "session-analyses"
 COST_LOG_PATH = Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "cost-log.md"
 
 
 @app.get("/api/sessions/{session_id}/artifact")
-async def get_artifact(session_id: str):
+async def get_artifact(session_id: str, user_id: str = Depends(require_user)):
     safe_id = Path(session_id).name  # belt and suspenders against path traversal
-    path = ARTIFACTS_DIR / f"{safe_id}.md"
+    if not sessions.session_belongs_to(user_id, safe_id):
+        raise HTTPException(status_code=404, detail="artifact not ready or not found")
+    path = ARTIFACTS_DIR / user_id / f"{safe_id}.md"
     if not path.exists():
         raise HTTPException(status_code=404, detail="artifact not ready or not found")
     return FileResponse(path, media_type="text/markdown")
 
 
 @app.get("/api/sessions/latest")
-async def get_latest_session():
-    """Most recent study session, used by the picker-screen 'View last session'
-    link. Iterates session-log.jsonl in reverse since study session rows are
-    appended at session end and carry the UUID + document_id we need."""
+async def get_latest_session(user_id: str = Depends(require_user)):
+    """Most recent study session for ``user_id``, used by the picker-screen 'View
+    last session' link. Iterates session-log.jsonl in reverse since study session
+    rows are appended at session end and carry the UUID + document_id we need."""
     jsonl_path = Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "session-log.jsonl"
     if not jsonl_path.exists():
         raise HTTPException(status_code=404, detail="no sessions yet")
@@ -301,8 +305,10 @@ async def get_latest_session():
             continue
         if entry.get("kind") != "session" or entry.get("mode") != "study":
             continue
+        if entry.get("user_id") != user_id:
+            continue
         doc_id = entry.get("document_id")
-        loaded = documents.load_document(doc_id) if doc_id else None
+        loaded = documents.load_document(user_id, doc_id) if doc_id else None
         return {
             "session_id": entry["session_id"],
             "document_id": doc_id,
@@ -312,17 +318,17 @@ async def get_latest_session():
 
 
 @app.get("/api/sessions")
-async def list_sessions():
-    """All completed study sessions, newest first, for the /study/ history
-    surface. Thin wrapper — all listing logic lives in the pure sessions.py
-    helper (Pipecat-free, hermetically tested)."""
-    return sessions.list_study_sessions()
+async def list_sessions(user_id: str = Depends(require_user)):
+    """All completed study sessions for ``user_id``, newest first, for the
+    /study/ history surface. Thin wrapper — all listing logic lives in the pure
+    sessions.py helper (Pipecat-free, hermetically tested)."""
+    return sessions.list_study_sessions(user_id)
 
 
 SESSION_LOG_JSONL_PATH = Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "session-log.jsonl"
 
 
-def _lookup_session_doc(session_id: str) -> dict | None:
+def _lookup_session_doc(user_id: str, session_id: str) -> dict | None:
     """Look up the document_id/title for a session from session-log.jsonl.
     Returns None if not found."""
     if not SESSION_LOG_JSONL_PATH.exists():
@@ -335,7 +341,7 @@ def _lookup_session_doc(session_id: str) -> dict | None:
                 continue
             if entry.get("kind") == "session" and entry.get("session_id") == session_id:
                 doc_id = entry.get("document_id")
-                loaded = documents.load_document(doc_id) if doc_id else None
+                loaded = documents.load_document(user_id, doc_id) if doc_id else None
                 return {
                     "document_id": doc_id,
                     "document_title": loaded[0] if loaded else None,
@@ -344,20 +350,24 @@ def _lookup_session_doc(session_id: str) -> dict | None:
 
 
 @app.get("/api/sessions/{session_id}/telemetry")
-async def get_telemetry(session_id: str):
+async def get_telemetry(session_id: str, user_id: str = Depends(require_user)):
     """Composite endpoint for the /study/ ended view. Each field is null until
     that artifact lands; the frontend polls and renders pieces progressively.
 
     Includes the recap so the frontend polls a single URL rather than juggling
-    `/artifact` + `/telemetry` independently."""
+    `/artifact` + `/telemetry` independently. Non-Matt users get the Matt-only
+    fields (analysis, has_prompt) redacted before the response leaves this
+    function — see ``sessions.redact_telemetry_for_user``."""
     safe_id = Path(session_id).name
-    artifact_path = ARTIFACTS_DIR / f"{safe_id}.md"
-    usage_path = TRANSCRIPTS_DIR / f"{safe_id}.usage.json"
-    summary_path = TRANSCRIPTS_DIR / f"{safe_id}.summary.md"
-    analysis_path = session_naming.find_analysis_path(SESSION_ANALYSES_DIR, safe_id)
-    prompt_path = TRANSCRIPTS_DIR / f"{safe_id}.prompt.txt"
-    doc_info = _lookup_session_doc(safe_id) or {"document_id": None, "document_title": None}
-    return {
+    if not sessions.session_belongs_to(user_id, safe_id):
+        raise HTTPException(status_code=404, detail="session not found")
+    artifact_path = ARTIFACTS_DIR / user_id / f"{safe_id}.md"
+    usage_path = TRANSCRIPTS_DIR / user_id / f"{safe_id}.usage.json"
+    summary_path = TRANSCRIPTS_DIR / user_id / f"{safe_id}.summary.md"
+    analysis_path = session_naming.find_analysis_path(SESSION_ANALYSES_DIR, user_id, safe_id)
+    prompt_path = TRANSCRIPTS_DIR / user_id / f"{safe_id}.prompt.txt"
+    doc_info = _lookup_session_doc(user_id, safe_id) or {"document_id": None, "document_title": None}
+    result = {
         "recap": artifact_path.read_text() if artifact_path.exists() else None,
         "cost": json.loads(usage_path.read_text()) if usage_path.exists() else None,
         "memory_append": summary_path.read_text() if summary_path.exists() else None,
@@ -370,6 +380,7 @@ async def get_telemetry(session_id: str):
         "document_id": doc_info["document_id"],
         "document_title": doc_info["document_title"],
     }
+    return sessions.redact_telemetry_for_user(result, user_id)
 
 
 # ─── Viewer pages: render persistent system state for the demo ──────────
@@ -479,8 +490,10 @@ def _render_viewer(eyebrow: str, title: str, subtitle: str, content: str, mode: 
 
 
 @app.get("/view/memory", include_in_schema=False)
-async def view_memory(from_session: str | None = Query(None, alias="from")):
-    content = MEMORY_PATH.read_text() if MEMORY_PATH.exists() else "_(memory.md is empty.)_"
+async def view_memory(
+    from_session: str | None = Query(None, alias="from"), user_id: str = Depends(require_user)
+):
+    content = session_state.load_memory(user_id) or "_(memory.md is empty.)_"
     return HTMLResponse(_render_viewer(
         "Persistent state",
         "memory.md",
@@ -492,8 +505,10 @@ async def view_memory(from_session: str | None = Query(None, alias="from")):
 
 
 @app.get("/view/profile", include_in_schema=False)
-async def view_profile(from_session: str | None = Query(None, alias="from")):
-    content = PROFILE_PATH.read_text() if PROFILE_PATH.exists() else "_(profile.md is empty.)_"
+async def view_profile(
+    from_session: str | None = Query(None, alias="from"), user_id: str = Depends(require_user)
+):
+    content = session_state.load_profile(user_id) or "_(profile.md is empty.)_"
     return HTMLResponse(_render_viewer(
         "Persistent state",
         "profile.md",
@@ -505,7 +520,11 @@ async def view_profile(from_session: str | None = Query(None, alias="from")):
 
 
 @app.get("/view/cost-log", include_in_schema=False)
-async def view_cost_log(from_session: str | None = Query(None, alias="from")):
+async def view_cost_log(
+    from_session: str | None = Query(None, alias="from"), user_id: str = Depends(require_user)
+):
+    if not sessions.can_view_machine_artifacts(user_id):
+        raise HTTPException(status_code=404, detail="not found")
     content = COST_LOG_PATH.read_text() if COST_LOG_PATH.exists() else "_(cost-log.md not found.)_"
     return HTMLResponse(_render_viewer(
         "Persistent state",
@@ -518,9 +537,13 @@ async def view_cost_log(from_session: str | None = Query(None, alias="from")):
 
 
 @app.get("/view/sessions/{session_id}/prompt", include_in_schema=False)
-async def view_prompt(session_id: str):
+async def view_prompt(session_id: str, user_id: str = Depends(require_user)):
+    if not sessions.can_view_machine_artifacts(user_id):
+        raise HTTPException(status_code=404, detail="prompt not found for this session")
     safe_id = Path(session_id).name
-    path = TRANSCRIPTS_DIR / f"{safe_id}.prompt.txt"
+    if not sessions.session_belongs_to(user_id, safe_id):
+        raise HTTPException(status_code=404, detail="prompt not found for this session")
+    path = TRANSCRIPTS_DIR / user_id / f"{safe_id}.prompt.txt"
     if not path.exists():
         raise HTTPException(status_code=404, detail="prompt not found for this session")
     return HTMLResponse(_render_viewer(
@@ -534,9 +557,13 @@ async def view_prompt(session_id: str):
 
 
 @app.get("/view/sessions/{session_id}/analysis", include_in_schema=False)
-async def view_analysis(session_id: str):
+async def view_analysis(session_id: str, user_id: str = Depends(require_user)):
+    if not sessions.can_view_machine_artifacts(user_id):
+        raise HTTPException(status_code=404, detail="analysis not found for this session")
     safe_id = Path(session_id).name
-    path = session_naming.find_analysis_path(SESSION_ANALYSES_DIR, safe_id)
+    if not sessions.session_belongs_to(user_id, safe_id):
+        raise HTTPException(status_code=404, detail="analysis not found for this session")
+    path = session_naming.find_analysis_path(SESSION_ANALYSES_DIR, user_id, safe_id)
     if path is None:
         raise HTTPException(status_code=404, detail="analysis not found for this session")
     return HTMLResponse(_render_viewer(

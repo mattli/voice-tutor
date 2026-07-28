@@ -362,3 +362,33 @@ def test_path_resolved_at_call_time(tmp_path, monkeypatch, docs_dir):
     # Re-point at a non-existent path within the same test → call-time read yields [].
     monkeypatch.setattr(_s, "SESSION_LOG_JSONL_PATH", tmp_path / "nope.jsonl")
     assert _s.list_study_sessions("matt") == []
+
+
+# --------------------------------------------------------------------------- #
+# Task 12 — ownership predicate, Matt-only gate, telemetry redaction          #
+# --------------------------------------------------------------------------- #
+
+
+def test_session_belongs_to(cost_log_tmp):
+    _seed_session(cost_log_tmp, session_id="sa", document_id="d", user_id="matt")
+    assert sessions.session_belongs_to("matt", "sa") is True
+    assert sessions.session_belongs_to("sarah", "sa") is False
+    assert sessions.session_belongs_to("matt", "missing") is False
+
+
+def test_can_view_machine_artifacts_matt_only():
+    # Mirror image: a non-matt user is denied prompt/analysis/cost-log surfaces.
+    assert sessions.can_view_machine_artifacts("matt") is True
+    assert sessions.can_view_machine_artifacts("sarah") is False
+
+
+def test_redact_telemetry_strips_matt_only_fields_for_non_matt():
+    full = {"recap": "r", "cost": {"x": 1}, "memory_append": "m",
+            "analysis": "AAA", "has_prompt": True, "document_title": "T"}
+    # Matt sees everything.
+    assert sessions.redact_telemetry_for_user(full, "matt") == full
+    # Sarah's composite must not carry the analysis or a prompt reference.
+    red = sessions.redact_telemetry_for_user(full, "sarah")
+    assert red["analysis"] is None and red["has_prompt"] is False
+    # Her own learning artifacts survive.
+    assert red["recap"] == "r" and red["cost"] == {"x": 1} and red["memory_append"] == "m"
