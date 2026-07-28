@@ -20,7 +20,7 @@ FORBIDDEN_TOKENS = [
     "ARTIFACTS_DIR",
     "SESSION_ANALYSIS_DIR",
     "COST_LOG_PATH",
-    "COST_LOG_JSONL_PATH",
+    "SESSION_LOG_JSONL_PATH",
     "build_system_instruction",
     "UsageAccumulator",
     "BaseObserver",

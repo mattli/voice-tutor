@@ -49,8 +49,8 @@ PRICE_CARTESIA_PER_CHAR = 5.00 / 100_000
 # CALL time (not bound into a local at import) so a test can monkeypatch this
 # attribute to a per-test tmp ledger — same pattern as sessions.py /
 # grounding.py / documents.py.
-COST_LOG_JSONL_PATH = (
-    Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "cost-log.jsonl"
+SESSION_LOG_JSONL_PATH = (
+    Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "session-log.jsonl"
 )
 
 # Absolute tolerance (in USD) for comparing a recomputed cost against the row's
@@ -179,7 +179,7 @@ def costs_match(recomputed: float, stored, tolerance: float = COST_TOLERANCE_USD
 #
 # Everything below layers audit CHECKS on top of the pure recompute core above.
 # It stays stdlib-only and reads the ledger from the module-level
-# ``COST_LOG_JSONL_PATH`` at CALL time so tests can monkeypatch that attribute
+# ``SESSION_LOG_JSONL_PATH`` at CALL time so tests can monkeypatch that attribute
 # (same pattern as sessions.py / grounding.py / documents.py). No app/bot/
 # pipecat/network/API-key dependency is introduced.
 # ===========================================================================
@@ -405,7 +405,7 @@ def audit_cost_log(path: Path | None = None) -> AuditResult:
     """Audit the cost-log ledger and return a structured :class:`AuditResult`.
 
     Reads the ledger from ``path`` (default: the module-level
-    ``COST_LOG_JSONL_PATH``, read at CALL time so tests can monkeypatch it).
+    ``SESSION_LOG_JSONL_PATH``, read at CALL time so tests can monkeypatch it).
     Runs, per row, the malformed and cost_mismatch checks, then a whole-file
     two-phase orphan pass. Pure w.r.t. app/bot/pipecat/network — only stdlib and
     the ledger file are touched.
@@ -414,7 +414,7 @@ def audit_cost_log(path: Path | None = None) -> AuditResult:
     does not abort the audit; every subsequent line is still processed.
     """
     if path is None:
-        path = COST_LOG_JSONL_PATH
+        path = SESSION_LOG_JSONL_PATH
 
     findings: list[Finding] = []
     # Track, for the orphan pass: every session_id seen on a session row, and
@@ -480,7 +480,7 @@ def format_report(result: AuditResult) -> str:
     Pure: builds and returns a string, does no I/O.
     """
     lines = []
-    lines.append(f"cost-log audit — {COST_LOG_JSONL_PATH}")
+    lines.append(f"cost-log audit — {SESSION_LOG_JSONL_PATH}")
     lines.append(f"rows read:  {result.rows_read}")
     lines.append(f"rows valid: {result.rows_valid}")
     lines.append("per-check failure counts:")

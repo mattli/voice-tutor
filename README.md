@@ -148,7 +148,7 @@ Storage:
 - `~/.voice-tutor/transcripts/<uuid>.json` — study session transcripts (UUID
   stem instead of datetime; the `/study/` page generates the UUID client-side)
 - `~/.voice-tutor/artifacts/<uuid>.md` — the recap
-- A separate `cost-log.jsonl` row with `kind: "artifact"` accounts for the
+- A separate `session-log.jsonl` row with `kind: "artifact"` accounts for the
   artifact-generation Haiku call
 
 ## Data

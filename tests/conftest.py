@@ -318,54 +318,54 @@ def _file_state(path):
 
 @pytest.fixture
 def cost_log_tmp(tmp_path, monkeypatch):
-    """Hermetically redirect sessions.COST_LOG_JSONL_PATH to a per-test tmp file.
+    """Hermetically redirect sessions.SESSION_LOG_JSONL_PATH to a per-test tmp file.
 
-    ``sessions.list_study_sessions`` reads the module-level ``COST_LOG_JSONL_PATH``
+    ``sessions.list_study_sessions`` reads the module-level ``SESSION_LOG_JSONL_PATH``
     attribute at call time, so patching that attribute on the *sessions* module is
-    the real resolution path. Guards that the real vault cost-log.jsonl is never
+    the real resolution path. Guards that the real vault session-log.jsonl is never
     created or mutated (handling the real file being absent as a distinct state).
 
     Yields the tmp ledger path so tests can seed / omit JSONL rows there.
     """
     import sessions
 
-    real_path = sessions.COST_LOG_JSONL_PATH
+    real_path = sessions.SESSION_LOG_JSONL_PATH
     before = _file_state(real_path)
 
-    ledger = tmp_path / "cost-log.jsonl"
-    monkeypatch.setattr(sessions, "COST_LOG_JSONL_PATH", ledger)
+    ledger = tmp_path / "session-log.jsonl"
+    monkeypatch.setattr(sessions, "SESSION_LOG_JSONL_PATH", ledger)
 
     yield ledger
 
     # The real vault cost-log must be byte-for-byte unchanged (or stay absent).
     after = _file_state(real_path)
-    assert after == before, "production cost-log.jsonl was mutated by a test"
+    assert after == before, "production session-log.jsonl was mutated by a test"
 
 
 @pytest.fixture
 def cost_audit_log_tmp(tmp_path, monkeypatch):
-    """Hermetically redirect cost_audit.COST_LOG_JSONL_PATH to a per-test tmp file.
+    """Hermetically redirect cost_audit.SESSION_LOG_JSONL_PATH to a per-test tmp file.
 
-    The audit CLI reads the module-level ``COST_LOG_JSONL_PATH`` attribute at
+    The audit CLI reads the module-level ``SESSION_LOG_JSONL_PATH`` attribute at
     call time, so patching that attribute on the *cost_audit* module is the real
     resolution path — same pattern as ``cost_log_tmp`` for sessions.py. Guards
-    that the real vault cost-log.jsonl is never created or mutated (handling the
+    that the real vault session-log.jsonl is never created or mutated (handling the
     real file being absent as a distinct state).
 
     Yields the tmp ledger path so tests can seed / omit JSONL rows there.
     """
     import cost_audit
 
-    real_path = cost_audit.COST_LOG_JSONL_PATH
+    real_path = cost_audit.SESSION_LOG_JSONL_PATH
     before = _file_state(real_path)
 
-    ledger = tmp_path / "cost-log.jsonl"
-    monkeypatch.setattr(cost_audit, "COST_LOG_JSONL_PATH", ledger)
+    ledger = tmp_path / "session-log.jsonl"
+    monkeypatch.setattr(cost_audit, "SESSION_LOG_JSONL_PATH", ledger)
 
     yield ledger
 
     after = _file_state(real_path)
-    assert after == before, "production cost-log.jsonl was mutated by a test"
+    assert after == before, "production session-log.jsonl was mutated by a test"
 
 
 @pytest.fixture
@@ -402,24 +402,24 @@ def session_state_tmp(tmp_path, monkeypatch):
 def study_history_tmp(tmp_path, monkeypatch):
     """Redirect study_history's ledger + artifacts constants to per-test tmp.
 
-    study_history reads COST_LOG_JSONL_PATH / ARTIFACTS_DIR at call time, so
+    study_history reads SESSION_LOG_JSONL_PATH / ARTIFACTS_DIR at call time, so
     patching the module attributes is the real resolution path. Guards the real
     vault cost-log and ~/.voice-tutor artifacts dir against mutation.
     """
     import study_history as sh
 
-    real_ledger = sh.COST_LOG_JSONL_PATH
+    real_ledger = sh.SESSION_LOG_JSONL_PATH
     real_artifacts = sh.ARTIFACTS_DIR
     before_ledger = _file_state(real_ledger)
     before_artifacts = _snapshot(real_artifacts)
 
-    ledger = tmp_path / "cost-log.jsonl"
+    ledger = tmp_path / "session-log.jsonl"
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(sh, "COST_LOG_JSONL_PATH", ledger)
+    monkeypatch.setattr(sh, "SESSION_LOG_JSONL_PATH", ledger)
     monkeypatch.setattr(sh, "ARTIFACTS_DIR", artifacts)
 
     yield ledger, artifacts
 
-    assert _file_state(real_ledger) == before_ledger, "production cost-log.jsonl mutated"
+    assert _file_state(real_ledger) == before_ledger, "production session-log.jsonl mutated"
     assert _snapshot(real_artifacts) == before_artifacts, "production artifacts dir mutated"

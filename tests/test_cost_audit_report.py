@@ -3,7 +3,7 @@
 These tests drive ``cost_audit.main`` / ``cost_audit.format_report`` over
 fixture JSONL content written to a per-test tmp ledger (via the
 ``cost_audit_log_tmp`` fixture, which monkeypatches
-``cost_audit.COST_LOG_JSONL_PATH`` — the same pattern as sessions.py's
+``cost_audit.SESSION_LOG_JSONL_PATH`` — the same pattern as sessions.py's
 ``cost_log_tmp`` and grounding.py's ``grounding_tmp``). Everything is
 stdlib-only, touches no real filesystem outside tmp, no network, and passes with
 all provider API keys unset and Pipecat unimportable by the report path.
@@ -382,7 +382,7 @@ def test_report_run_is_read_only(cost_audit_log_tmp, capsys):
 # ===========================================================================
 def test_real_default_path_smoke_is_read_only_and_returns_zero(capsys):
     # NO monkeypatch: exercise the real configured default path.
-    real_path = cost_audit.COST_LOG_JSONL_PATH
+    real_path = cost_audit.SESSION_LOG_JSONL_PATH
     existed = real_path.exists()
     before_hash = _sha256(real_path) if existed else None
 

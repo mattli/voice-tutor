@@ -3,14 +3,14 @@ document, parsed into a compact shape for the session-opening prompt.
 
 Module-level path constants are read at CALL time (not bound at import) so tests
 can monkeypatch them to per-test tmp paths — mirroring documents.DOCUMENTS_DIR /
-sessions.COST_LOG_JSONL_PATH.
+sessions.SESSION_LOG_JSONL_PATH.
 """
 
 import json
 from pathlib import Path
 
-COST_LOG_JSONL_PATH = (
-    Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "cost-log.jsonl"
+SESSION_LOG_JSONL_PATH = (
+    Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "session-log.jsonl"
 )
 ARTIFACTS_DIR = Path.home() / ".voice-tutor" / "artifacts"
 
@@ -49,7 +49,7 @@ def previous_session_recap(document_id, exclude_session_id):
     recap artifact, return None rather than an older session's recap. A stale
     "last time we covered X" is worse than no recap.
     """
-    path = COST_LOG_JSONL_PATH
+    path = SESSION_LOG_JSONL_PATH
     if not path.exists():
         return None
 

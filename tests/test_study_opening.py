@@ -96,7 +96,7 @@ import hashlib
 
 # Captured from `main` BEFORE any code change — `bot.static_prompt_hash(study=True)`
 # on the current tree — and cross-checked against the prompt_hash of real study
-# rows in cost-log.jsonl (both 2026-07-26 sessions carry this exact value). Pinned
+# rows in session-log.jsonl (both 2026-07-26 sessions carry this exact value). Pinned
 # as a LITERAL, not recomputed from the constants: an accidental byte change to
 # STUDY_BASE_INSTRUCTION/BREVITY/STUDY reminders must break this test loudly rather
 # than silently breaking continuity with every historical ledger row.

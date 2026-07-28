@@ -3,7 +3,7 @@
 
 This script is NOT part of the app and is NOT imported by ``app.py`` / ``bot.py``.
 It answers a question the internal-consistency audit (``cost_audit.py``)
-deliberately cannot: does our local ledger (``cost-log.jsonl``) match what the
+deliberately cannot: does our local ledger (``session-log.jsonl``) match what the
 providers *actually billed*? ``cost_audit.py`` proves the logger's arithmetic is
 honest given each row's own numbers; this proves the numbers themselves are real
 by diffing them against Anthropic / Deepgram / Cartesia usage APIs.
@@ -773,7 +773,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--end", help="Range end YYYY-MM-DD (local, inclusive). Default: ledger latest.")
     p.add_argument(
         "--ledger",
-        help="Path to cost-log.jsonl (default: cost_audit.COST_LOG_JSONL_PATH).",
+        help="Path to session-log.jsonl (default: cost_audit.SESSION_LOG_JSONL_PATH).",
     )
     p.add_argument(
         "--tolerance-pct",
@@ -834,7 +834,7 @@ def reconcile_anthropic(totals: LedgerTotals, provider: dict[str, TokenBucket]) 
 def main(argv=None) -> int:
     args = build_arg_parser().parse_args(argv)
     tolerance = resolve_tolerance(args.tolerance_pct)
-    ledger_path = Path(args.ledger) if args.ledger else cost_audit.COST_LOG_JSONL_PATH
+    ledger_path = Path(args.ledger) if args.ledger else cost_audit.SESSION_LOG_JSONL_PATH
     requested = {p.strip().lower() for p in args.providers.split(",") if p.strip()}
 
     rows = load_ledger_rows(ledger_path)

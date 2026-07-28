@@ -5,7 +5,7 @@ pipecat, or construct a TestClient — they exercise sessions.py directly, which
 is Pipecat-free (imports only ``documents`` for title resolution).
 
 Fixtures (conftest.py):
-  - ``cost_log_tmp`` monkeypatches ``sessions.COST_LOG_JSONL_PATH`` to a per-test
+  - ``cost_log_tmp`` monkeypatches ``sessions.SESSION_LOG_JSONL_PATH`` to a per-test
     tmp ledger and guards the real vault cost-log is never mutated.
   - ``docs_dir`` monkeypatches ``documents.DOCUMENTS_DIR`` to a per-test tmp dir
     and guards the real documents dir is never mutated. We seed ``<doc_id>.txt``
@@ -62,15 +62,15 @@ def _seed_doc(docs_dir, doc_id, title):
 
 def test_module_surface():
     assert callable(sessions.list_study_sessions)
-    assert hasattr(sessions, "COST_LOG_JSONL_PATH")
-    # Default path is the expanduser-resolved vault cost-log.jsonl.
-    assert sessions.COST_LOG_JSONL_PATH == (
+    assert hasattr(sessions, "SESSION_LOG_JSONL_PATH")
+    # Default path is the expanduser-resolved vault session-log.jsonl.
+    assert sessions.SESSION_LOG_JSONL_PATH == (
         Path.home()
         / "second-brain"
         / "products"
         / "voice-tutor"
         / "validation"
-        / "cost-log.jsonl"
+        / "session-log.jsonl"
     )
 
 
@@ -309,9 +309,9 @@ def test_path_resolved_at_call_time(tmp_path, monkeypatch, docs_dir):
     # Guard the real file is not mutated even though we don't use cost_log_tmp here.
     import sessions as _s
 
-    monkeypatch.setattr(_s, "COST_LOG_JSONL_PATH", seeded)
+    monkeypatch.setattr(_s, "SESSION_LOG_JSONL_PATH", seeded)
     assert [r["session_id"] for r in _s.list_study_sessions()] == ["s-1"]
 
     # Re-point at a non-existent path within the same test → call-time read yields [].
-    monkeypatch.setattr(_s, "COST_LOG_JSONL_PATH", tmp_path / "nope.jsonl")
+    monkeypatch.setattr(_s, "SESSION_LOG_JSONL_PATH", tmp_path / "nope.jsonl")
     assert _s.list_study_sessions() == []

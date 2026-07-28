@@ -3,7 +3,7 @@
 session_naming.session_analysis_filename builds the on-disk name for a
 session-analysis markdown file — date-first (so the folder sorts chronologically)
 with an 8-char shortid of the UUID session_id (so the file still joins to
-cost-log.jsonl rows and ~/.voice-tutor/artifacts/<full-uuid>.md). It's Pipecat-free
+session-log.jsonl rows and ~/.voice-tutor/artifacts/<full-uuid>.md). It's Pipecat-free
 and derives the date from the session's actual START time, not the write time, so
 it is tested here with plain datetimes (no bot.py / pipecat / network / filesystem).
 """

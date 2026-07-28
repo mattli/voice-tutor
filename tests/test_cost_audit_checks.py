@@ -2,7 +2,7 @@
 
 These tests drive ``cost_audit.audit_cost_log`` over fixture JSONL content
 written to a per-test tmp ledger (via the ``cost_audit_log_tmp`` fixture, which
-monkeypatches ``cost_audit.COST_LOG_JSONL_PATH`` — the same pattern as
+monkeypatches ``cost_audit.SESSION_LOG_JSONL_PATH`` — the same pattern as
 sessions.py's ``cost_log_tmp``). Everything is stdlib-only, touches no real
 filesystem outside tmp, no network, and passes with all provider API keys unset
 and Pipecat absent.

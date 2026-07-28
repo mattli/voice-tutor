@@ -13,7 +13,7 @@ def session_analysis_filename(session_start: datetime, session_id: str | None) -
     """Return the session-analysis markdown filename (no directory).
 
     Date-first so the ``session-analyses/`` folder sorts chronologically; the
-    8-char shortid preserves the join to ``cost-log.jsonl`` rows and
+    8-char shortid preserves the join to ``session-log.jsonl`` rows and
     ``~/.voice-tutor/artifacts/<full-uuid>.md``.
 
     ``session_start`` is the session's actual start time, not the write time.

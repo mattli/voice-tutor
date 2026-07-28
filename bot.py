@@ -60,7 +60,7 @@ from cost_audit import (
     PRICE_DEEPGRAM_NOVA3_PER_MIN,
 )
 
-# NOTE: cost-log.jsonl starts from the first session after this refactor
+# NOTE: session-log.jsonl starts from the first session after this refactor
 # (2026-04-15+). Sessions logged before this (e.g. 2026-04-14) only exist as
 # rows in cost-log.md — there's no raw usage data to backfill for them.
 
@@ -215,7 +215,9 @@ ARTIFACTS_DIR = VOICE_TUTOR_DIR / "artifacts"
 # everything before a cutoff date into a single "before April X" block. Not today's
 # problem — revisit when the memory block starts dominating the system prompt.
 COST_LOG_PATH = Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "cost-log.md"
-COST_LOG_JSONL_PATH = COST_LOG_PATH.with_suffix(".jsonl")
+# The append-only per-session ledger. Named session-log.jsonl (cost is one field
+# per row, not the whole story); the human-facing report keeps the cost-log.md name.
+SESSION_LOG_JSONL_PATH = COST_LOG_PATH.with_name("session-log.jsonl")
 SESSION_ANALYSIS_DIR = Path.home() / "second-brain" / "products" / "voice-tutor" / "session-analyses"
 # Lower bound (in seconds) before we spend Haiku tokens on a session summary or
 # analysis. 120 is the production default — shorter sessions tend to produce
@@ -511,7 +513,7 @@ def generate_session_analysis(
 async def generate_artifact(session_id: str, study_meta: dict, transcript: dict, duration_sec: float):
     """Fire-and-forget Haiku call writing ~/.voice-tutor/artifacts/<session_id>.md.
 
-    Writes a separate row to cost-log.jsonl with kind="artifact" so the cost is
+    Writes a separate row to session-log.jsonl with kind="artifact" so the cost is
     auditable without retroactively patching the synchronous session row.
     """
     duration_mmss = f"{int(duration_sec // 60)}:{int(duration_sec % 60):02d}"
@@ -553,8 +555,8 @@ async def generate_artifact(session_id: str, study_meta: dict, transcript: dict,
         "output_tokens": out_tok,
         "cost_usd": round(cost, 4),
     }
-    COST_LOG_JSONL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with COST_LOG_JSONL_PATH.open("a") as f:
+    SESSION_LOG_JSONL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with SESSION_LOG_JSONL_PATH.open("a") as f:
         f.write(json.dumps(row) + "\n")
 
 
@@ -897,9 +899,9 @@ async def bot(runner_args):
                 "(TTS audio bytes, LLM token counts, Deepgram streamed minutes).\n"
                 "Rates last verified 2026-04-15 against provider pricing pages.\n"
                 "The LLM column includes both live Sonnet and post-session Haiku\n"
-                "(matching the Anthropic dashboard); see `cost-log.jsonl` for the\n"
+                "(matching the Anthropic dashboard); see `session-log.jsonl` for the\n"
                 "live-vs-post-session breakdown.\n"
-                "Per-session raw usage is logged to `cost-log.jsonl` for auditing\n"
+                "Per-session raw usage is logged to `session-log.jsonl` for auditing\n"
                 "(starting 2026-04-15 — earlier sessions have no raw-usage sidecar).\n\n"
                 "| Session start | Duration | Turns | Total | LLM | STT | TTS |\n"
                 "|---|---|---|---|---|---|---|\n"
@@ -945,7 +947,7 @@ async def bot(runner_args):
             jsonl_entry["session_id"] = study_meta["session_id"]
             jsonl_entry["mode"] = "study"
             jsonl_entry["document_id"] = study_meta["document_id"]
-        with COST_LOG_JSONL_PATH.open("a") as f:
+        with SESSION_LOG_JSONL_PATH.open("a") as f:
             f.write(json.dumps(jsonl_entry) + "\n")
 
         if study_meta:

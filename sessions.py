@@ -9,7 +9,7 @@ This module deliberately imports nothing from FastAPI / pipecat / bot — only
 ``/api/sessions/latest`` join in app.py does). The FastAPI route in app.py is a
 thin wrapper around ``list_study_sessions()``.
 
-``COST_LOG_JSONL_PATH`` is a module-level constant read at CALL time (not bound
+``SESSION_LOG_JSONL_PATH`` is a module-level constant read at CALL time (not bound
 into a local at import time) so a test can ``monkeypatch.setattr`` it to a
 per-test tmp_path ledger — mirroring documents.DOCUMENTS_DIR / grounding.WIKI_DIR.
 """
@@ -19,8 +19,8 @@ from pathlib import Path
 
 import documents
 
-COST_LOG_JSONL_PATH = (
-    Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "cost-log.jsonl"
+SESSION_LOG_JSONL_PATH = (
+    Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "session-log.jsonl"
 )
 
 
@@ -41,7 +41,7 @@ def list_study_sessions() -> list[dict]:
     empty or absent ledger yields an empty list.
     """
     # Read the path from the module namespace at call time so monkeypatch works.
-    path = COST_LOG_JSONL_PATH
+    path = SESSION_LOG_JSONL_PATH
     if not path.exists():
         return []
 

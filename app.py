@@ -244,9 +244,9 @@ async def get_artifact(session_id: str):
 @app.get("/api/sessions/latest")
 async def get_latest_session():
     """Most recent study session, used by the picker-screen 'View last session'
-    link. Iterates cost-log.jsonl in reverse since study session rows are
+    link. Iterates session-log.jsonl in reverse since study session rows are
     appended at session end and carry the UUID + document_id we need."""
-    jsonl_path = Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "cost-log.jsonl"
+    jsonl_path = Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "session-log.jsonl"
     if not jsonl_path.exists():
         raise HTTPException(status_code=404, detail="no sessions yet")
     with jsonl_path.open() as f:
@@ -276,15 +276,15 @@ async def list_sessions():
     return sessions.list_study_sessions()
 
 
-COST_LOG_JSONL_PATH = Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "cost-log.jsonl"
+SESSION_LOG_JSONL_PATH = Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "session-log.jsonl"
 
 
 def _lookup_session_doc(session_id: str) -> dict | None:
-    """Look up the document_id/title for a session from cost-log.jsonl.
+    """Look up the document_id/title for a session from session-log.jsonl.
     Returns None if not found."""
-    if not COST_LOG_JSONL_PATH.exists():
+    if not SESSION_LOG_JSONL_PATH.exists():
         return None
-    with COST_LOG_JSONL_PATH.open() as f:
+    with SESSION_LOG_JSONL_PATH.open() as f:
         for line in f:
             try:
                 entry = json.loads(line)

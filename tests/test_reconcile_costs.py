@@ -264,7 +264,7 @@ def test_ledger_local_bounds():
 # --- ledger loading ---------------------------------------------------------
 
 def test_load_ledger_rows_skips_blank_and_malformed(tmp_path):
-    p = tmp_path / "cost-log.jsonl"
+    p = tmp_path / "session-log.jsonl"
     p.write_text(
         '{"kind": "session", "session_id": "s1"}\n'
         "\n"
