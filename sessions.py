@@ -24,8 +24,13 @@ SESSION_LOG_JSONL_PATH = (
 )
 
 
-def list_study_sessions() -> list[dict]:
-    """Return completed study sessions, newest first.
+def list_study_sessions(user_id: str) -> list[dict]:
+    """Return completed study sessions for ``user_id`` only, newest first.
+
+    ``user_id`` is REQUIRED — this is a scoped listing, not a global one. Rows
+    whose ``user_id`` does not match the argument are excluded entirely
+    (structural filter), so one user can never see another user's session
+    history. There is no unscoped overload.
 
     Each row is a mapping with exactly:
       - ``session_id``
@@ -35,10 +40,11 @@ def list_study_sessions() -> list[dict]:
       - ``session_duration_sec``
       - ``cost_total_usd``
 
-    A row qualifies iff ``kind == "session"``, ``mode == "study"``, and it carries
-    a non-null ``document_id``. Open-chat / doc-less / non-session (e.g. artifact)
-    rows are excluded. Malformed / non-JSON lines are skipped, never fatal. An
-    empty or absent ledger yields an empty list.
+    A row qualifies iff ``kind == "session"``, ``mode == "study"``, its
+    ``user_id`` matches the argument, and it carries a non-null
+    ``document_id``. Open-chat / doc-less / non-session (e.g. artifact) /
+    other-user rows are excluded. Malformed / non-JSON lines are skipped,
+    never fatal. An empty or absent ledger yields an empty list.
     """
     # Read the path from the module namespace at call time so monkeypatch works.
     path = SESSION_LOG_JSONL_PATH
@@ -60,6 +66,8 @@ def list_study_sessions() -> list[dict]:
             if entry.get("kind") != "session":
                 continue
             if entry.get("mode") != "study":
+                continue
+            if entry.get("user_id") != user_id:
                 continue
             doc_id = entry.get("document_id")
             if doc_id is None:

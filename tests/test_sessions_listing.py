@@ -34,7 +34,7 @@ def _write_ledger(path, rows):
     path.write_text("".join(line if line.endswith("\n") else line + "\n" for line in rows))
 
 
-def _study_row(session_id, session_start, document_id, duration=480, cost=1.39):
+def _study_row(session_id, session_start, document_id, duration=480, cost=1.39, user_id="matt"):
     return json.dumps(
         {
             "kind": "session",
@@ -45,6 +45,7 @@ def _study_row(session_id, session_start, document_id, duration=480, cost=1.39):
             "session_duration_sec": duration,
             "cost_total_usd": cost,
             "document_id": document_id,
+            "user_id": user_id,
         }
     )
 
@@ -53,6 +54,25 @@ def _seed_doc(docs_dir, doc_id, title):
     """Materialize a document so documents.load_document(doc_id) resolves ``title``."""
     docs_dir.mkdir(parents=True, exist_ok=True)
     (docs_dir / f"{doc_id}.txt").write_text(f"# {title}\nbody text")
+
+
+def _seed_session(path, *, session_id, document_id, user_id, session_start="2026-02-10T12:00:00"):
+    """Append one valid study-session row stamped with ``user_id`` to the ledger at ``path``."""
+    row = json.dumps(
+        {
+            "kind": "session",
+            "mode": "study",
+            "session_id": session_id,
+            "session_start": session_start,
+            "session_end": session_start,
+            "session_duration_sec": 480,
+            "cost_total_usd": 1.39,
+            "document_id": document_id,
+            "user_id": user_id,
+        }
+    )
+    with path.open("a") as f:
+        f.write(row + "\n")
 
 
 # --------------------------------------------------------------------------- #
@@ -96,6 +116,27 @@ def test_import_is_pipecat_free():
 
 
 # --------------------------------------------------------------------------- #
+# c9 — user_id scope + mirror image                                           #
+# --------------------------------------------------------------------------- #
+
+
+def test_list_scoped_to_user_and_mirror_image(cost_log_tmp, docs_dir):
+    # Materialize docs so titles resolve (existing helper pattern in this file).
+    _seed_doc(docs_dir, "doc-a", "A")
+    _seed_doc(docs_dir, "doc-b", "B")
+    _seed_session(cost_log_tmp, session_id="sa", document_id="doc-a", user_id="matt")
+    _seed_session(cost_log_tmp, session_id="sb", document_id="doc-b", user_id="sarah")
+
+    matt = sessions.list_study_sessions("matt")
+    sarah = sessions.list_study_sessions("sarah")
+    dev = sessions.list_study_sessions("dev")
+
+    assert [r["session_id"] for r in matt] == ["sa"]
+    assert [r["session_id"] for r in sarah] == ["sb"]
+    assert dev == []  # mirror image: a user with no sessions sees nothing
+
+
+# --------------------------------------------------------------------------- #
 # c7 — empty and absent ledger                                                 #
 # --------------------------------------------------------------------------- #
 
@@ -103,12 +144,12 @@ def test_import_is_pipecat_free():
 def test_absent_ledger_yields_empty(cost_log_tmp):
     # cost_log_tmp points at a path that does not exist yet.
     assert not cost_log_tmp.exists()
-    assert sessions.list_study_sessions() == []
+    assert sessions.list_study_sessions("matt") == []
 
 
 def test_empty_ledger_yields_empty(cost_log_tmp):
     cost_log_tmp.write_text("")
-    assert sessions.list_study_sessions() == []
+    assert sessions.list_study_sessions("matt") == []
 
 
 # --------------------------------------------------------------------------- #
@@ -129,7 +170,7 @@ def test_newest_first_ordering_and_fields(cost_log_tmp, docs_dir):
             _study_row("s-new", "2026-03-15T18:30:00", "doc-c", duration=600, cost=2.10),
         ],
     )
-    result = sessions.list_study_sessions()
+    result = sessions.list_study_sessions("matt")
     assert [r["session_id"] for r in result] == ["s-new", "s-mid", "s-old"]
 
     expected_keys = {
@@ -163,7 +204,7 @@ def test_equal_session_start_ties_do_not_raise(cost_log_tmp, docs_dir):
             _study_row("s-2", "2026-02-10T12:00:00", "doc-b"),
         ],
     )
-    result = sessions.list_study_sessions()
+    result = sessions.list_study_sessions("matt")
     assert {r["session_id"] for r in result} == {"s-1", "s-2"}
 
 
@@ -237,7 +278,7 @@ def test_filtering_excludes_non_study_and_docless_and_artifact(cost_log_tmp, doc
     ]
     _write_ledger(cost_log_tmp, rows)
 
-    result = sessions.list_study_sessions()
+    result = sessions.list_study_sessions("matt")
     ids = [r["session_id"] for r in result]
     assert ids == ["s-valid"]
     # doc-less study rows are absent (NOT present with document_title=None here).
@@ -258,7 +299,7 @@ def test_document_title_resolved(cost_log_tmp, docs_dir):
 
     _seed_doc(docs_dir, "doc-x", "The Great Document")
     _write_ledger(cost_log_tmp, [_study_row("s-1", "2026-02-10T12:00:00", "doc-x")])
-    result = sessions.list_study_sessions()
+    result = sessions.list_study_sessions("matt")
     assert len(result) == 1
     assert result[0]["document_title"] == documents.load_document("doc-x")[0]
     assert result[0]["document_title"] == "The Great Document"
@@ -273,7 +314,7 @@ def test_unresolvable_document_id_kept_with_none_title(cost_log_tmp, docs_dir):
     # docs_dir is empty: doc-missing has no corresponding document.
     docs_dir.mkdir(parents=True, exist_ok=True)
     _write_ledger(cost_log_tmp, [_study_row("s-1", "2026-02-10T12:00:00", "doc-missing")])
-    result = sessions.list_study_sessions()
+    result = sessions.list_study_sessions("matt")
     assert len(result) == 1
     assert result[0]["session_id"] == "s-1"
     assert result[0]["document_title"] is None
@@ -292,7 +333,7 @@ def test_malformed_lines_skipped(cost_log_tmp, docs_dir):
         + _study_row("s-good", "2026-02-10T12:00:00", "doc-a")
         + "\n"
     )
-    result = sessions.list_study_sessions()
+    result = sessions.list_study_sessions("matt")
     assert [r["session_id"] for r in result] == ["s-good"]
 
 
@@ -310,8 +351,8 @@ def test_path_resolved_at_call_time(tmp_path, monkeypatch, docs_dir):
     import sessions as _s
 
     monkeypatch.setattr(_s, "SESSION_LOG_JSONL_PATH", seeded)
-    assert [r["session_id"] for r in _s.list_study_sessions()] == ["s-1"]
+    assert [r["session_id"] for r in _s.list_study_sessions("matt")] == ["s-1"]
 
     # Re-point at a non-existent path within the same test → call-time read yields [].
     monkeypatch.setattr(_s, "SESSION_LOG_JSONL_PATH", tmp_path / "nope.jsonl")
-    assert _s.list_study_sessions() == []
+    assert _s.list_study_sessions("matt") == []
