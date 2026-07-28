@@ -77,6 +77,17 @@ def test_plan_analysis_moves_only_touches_analysis_files(tmp_path):
     assert (d / "matt" / "session-analysis-2026-08-01.md") not in dict(mig.plan_analysis_moves(d, "matt"))
 
 
+def test_archive_roots_puts_vault_snapshot_outside_the_vault(tmp_path):
+    home_state_root, vault_snapshot_root = mig.archive_roots(home=tmp_path)
+
+    assert home_state_root == tmp_path / ".voice-tutor" / "_archive"
+    assert vault_snapshot_root == tmp_path / ".voice-tutor" / "_migration-archive"
+    # The vault snapshot (session-log.jsonl + session-analyses/) must never land
+    # under the auto-committing ~/second-brain vault.
+    assert "second-brain" not in str(vault_snapshot_root)
+    assert str(vault_snapshot_root).startswith(str(tmp_path / ".voice-tutor"))
+
+
 def test_run_moves_moves_files_and_skips_existing_dest(tmp_path):
     src1 = tmp_path / "a.txt"
     src1.write_text("hello")

@@ -80,6 +80,26 @@ def plan_analysis_moves(analyses_dir: Path, user_id: str = DEFAULT_USER_ID) -> l
     return moves
 
 
+def archive_roots(home: Path | None = None) -> tuple[Path, Path]:
+    """Return ``(home_state_archive_root, vault_snapshot_archive_root)`` -- the two
+    pre-migration backup destinations used by the ``__main__`` migration.
+
+    Both live under ``~/.voice-tutor`` -- OUTSIDE the ``~/second-brain`` vault, which
+    has a 30-min auto-commit cron. A vault-snapshot backup living inside the vault
+    would get committed to GitHub, so the vault snapshot (the ``session-log.jsonl``
+    ledger + ``session-analyses/`` dir) is archived to a sibling directory instead
+    of alongside the vault's own files.
+
+    - ``home_state_archive_root``: ``~/.voice-tutor/_archive`` -- documents/
+      artifacts/transcripts/profile.md/memory.md (already outside the vault; unchanged).
+    - ``vault_snapshot_archive_root``: ``~/.voice-tutor/_migration-archive`` -- the
+      pre-migration copy of the vault's session-log.jsonl + session-analyses/.
+    """
+    home = home or Path.home()
+    vt_dir = home / ".voice-tutor"
+    return vt_dir / "_archive", vt_dir / "_migration-archive"
+
+
 def run_moves(moves: list[tuple[Path, Path]]) -> int:
     """Execute planned moves (dest parent created; skip if dest already exists)."""
     done = 0
@@ -115,6 +135,7 @@ if __name__ == "__main__":
     )
 
     ts = datetime.datetime.now().strftime("%Y-%m-%d-%H%M%S")
+    vt_archive, vault_archive = archive_roots()
 
     def _archive_copy(src: Path, archive_root: Path) -> None:
         """Copy ``src`` (file or dir) into ``archive_root/<ts>/<src.name>``.
@@ -136,15 +157,19 @@ if __name__ == "__main__":
 
     print(f"=== Voice Tutor identity migration ({ts}) ===")
 
-    # 1. Archive first (copy, never delete).
-    vt_archive = VOICE_TUTOR_DIR / "_archive"
+    # 1. Archive first (copy, never delete). The vault snapshot (session-log.jsonl +
+    # session-analyses/) is archived OUTSIDE ~/second-brain (which auto-commits every
+    # 30 min) -- see archive_roots(). The home-state snapshot stays under
+    # ~/.voice-tutor/_archive as before.
     for name in ("documents", "artifacts", "transcripts", "profile.md", "memory.md"):
         _archive_copy(VOICE_TUTOR_DIR / name, vt_archive)
 
-    vault_archive = SESSION_ANALYSES_DIR.parent / "_archive"
     _archive_copy(SESSION_LOG_JSONL_PATH, vault_archive)
     _archive_copy(SESSION_ANALYSES_DIR, vault_archive)
-    print(f"Archived originals into {vt_archive / ts} and {vault_archive / ts}.")
+    print(
+        f"Archived home-state snapshot into {vt_archive / ts} "
+        f"and vault snapshot into {vault_archive / ts} (outside the vault)."
+    )
 
     # 2. Backfill the ledger.
     rows_backfilled = 0
