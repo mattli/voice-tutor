@@ -34,7 +34,7 @@ def list_study_sessions(user_id: str) -> list[dict]:
 
     Each row is a mapping with exactly:
       - ``session_id``
-      - ``document_title`` (resolved via ``documents.load_document(document_id)``;
+      - ``document_title`` (resolved via ``documents.load_document(user_id, document_id)``;
         ``None`` if the document no longer resolves)
       - ``session_start`` (raw ISO string from the ledger, unmodified)
       - ``session_duration_sec``
@@ -72,7 +72,7 @@ def list_study_sessions(user_id: str) -> list[dict]:
             doc_id = entry.get("document_id")
             if doc_id is None:
                 continue
-            loaded = documents.load_document(doc_id)
+            loaded = documents.load_document(user_id, doc_id)
             rows.append(
                 {
                     "session_id": entry.get("session_id"),

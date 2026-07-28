@@ -50,10 +50,16 @@ def _study_row(session_id, session_start, document_id, duration=480, cost=1.39, 
     )
 
 
-def _seed_doc(docs_dir, doc_id, title):
-    """Materialize a document so documents.load_document(doc_id) resolves ``title``."""
-    docs_dir.mkdir(parents=True, exist_ok=True)
-    (docs_dir / f"{doc_id}.txt").write_text(f"# {title}\nbody text")
+def _seed_doc(docs_dir, doc_id, title, user_id="matt"):
+    """Materialize a document so documents.load_document(user_id, doc_id) resolves ``title``.
+
+    Documents are namespaced per-user under ``docs_dir/<user_id>/`` (documents.py
+    Task 7), so the seeded file must land in the same user's subdirectory that
+    ``list_study_sessions`` will look it up under.
+    """
+    user_docs_dir = docs_dir / user_id
+    user_docs_dir.mkdir(parents=True, exist_ok=True)
+    (user_docs_dir / f"{doc_id}.txt").write_text(f"# {title}\nbody text")
 
 
 def _seed_session(path, *, session_id, document_id, user_id, session_start="2026-02-10T12:00:00"):
@@ -122,8 +128,8 @@ def test_import_is_pipecat_free():
 
 def test_list_scoped_to_user_and_mirror_image(cost_log_tmp, docs_dir):
     # Materialize docs so titles resolve (existing helper pattern in this file).
-    _seed_doc(docs_dir, "doc-a", "A")
-    _seed_doc(docs_dir, "doc-b", "B")
+    _seed_doc(docs_dir, "doc-a", "A", user_id="matt")
+    _seed_doc(docs_dir, "doc-b", "B", user_id="sarah")
     _seed_session(cost_log_tmp, session_id="sa", document_id="doc-a", user_id="matt")
     _seed_session(cost_log_tmp, session_id="sb", document_id="doc-b", user_id="sarah")
 
@@ -301,7 +307,7 @@ def test_document_title_resolved(cost_log_tmp, docs_dir):
     _write_ledger(cost_log_tmp, [_study_row("s-1", "2026-02-10T12:00:00", "doc-x")])
     result = sessions.list_study_sessions("matt")
     assert len(result) == 1
-    assert result[0]["document_title"] == documents.load_document("doc-x")[0]
+    assert result[0]["document_title"] == documents.load_document("matt", "doc-x")[0]
     assert result[0]["document_title"] == "The Great Document"
 
 
