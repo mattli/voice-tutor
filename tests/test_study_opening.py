@@ -128,3 +128,20 @@ def test_regular_mode_hash_unaffected_by_flag(imported_bot, monkeypatch):
     monkeypatch.setattr(imported_bot, "SESSION_OPENING", False)
     off = imported_bot.static_prompt_hash(study=False)
     assert on == off  # non-study mode is untouched by session-opening
+
+
+# Captured from the pristine tree BEFORE identity threading (Task 1). Pinned as
+# LITERALS so any accidental change to static prompt CONTENT breaks loudly —
+# every historical session-log.jsonl row carries prompt_hash and must stay attributable.
+PRE_CHANGE_STUDY_HASH_FLAG_ON = "37a27d252d52265cd3e5a010636e409038d707cb6bc0029885aa6677f46afbb2"
+PRE_CHANGE_REGULAR_HASH = "dd9f2ab66e99687a32fdb7e51f6acdec9ba6567e2419483cd9e62bb57d482dac"
+
+
+def test_flag_on_study_hash_matches_pinned_literal(imported_bot, monkeypatch):
+    monkeypatch.setattr(imported_bot, "SESSION_OPENING", True)
+    assert imported_bot.static_prompt_hash(study=True) == PRE_CHANGE_STUDY_HASH_FLAG_ON
+
+
+def test_regular_mode_hash_matches_pinned_literal(imported_bot, monkeypatch):
+    monkeypatch.setattr(imported_bot, "SESSION_OPENING", False)
+    assert imported_bot.static_prompt_hash(study=False) == PRE_CHANGE_REGULAR_HASH
