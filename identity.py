@@ -51,6 +51,13 @@ def resolve_user(token: str | None, registry: dict[str, str]) -> str | None:
     return sanitize_user_id(user_id)
 
 
+def resolve_cookie(cookie_value: str | None) -> str | None:
+    """Convenience: resolve a cookie's token value to a user_id via the on-disk
+    registry. Reads the registry fresh each call so a newly minted/revoked token
+    takes effect without a restart."""
+    return resolve_user(cookie_value, load_registry())
+
+
 GATE_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

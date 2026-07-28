@@ -20,9 +20,9 @@ from typing import Any, Dict
 
 import re
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from pipecat.runner.types import SmallWebRTCRunnerArguments
 from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.request_handler import (
@@ -36,6 +36,7 @@ from pipecat_ai_small_webrtc_prebuilt.frontend import SmallWebRTCPrebuiltUI
 import bot
 import claims
 import documents
+import identity
 import session_naming
 import sessions
 
@@ -61,8 +62,31 @@ app.add_middleware(
 app.mount("/chat", SmallWebRTCPrebuiltUI)
 
 
+def require_user(request: Request) -> str:
+    """FastAPI dependency: resolve the identity cookie to a user_id, or 403.
+    Fail closed — no name-picker, no guessing."""
+    user_id = identity.resolve_cookie(request.cookies.get(identity.COOKIE_NAME))
+    if user_id is None:
+        raise HTTPException(status_code=403, detail="no valid identity")
+    return user_id
+
+
+@app.get("/api/whoami")
+async def whoami(user_id: str = Depends(require_user)):
+    return {"user_id": user_id}
+
+
 @app.post("/api/offer")
-async def offer(request: SmallWebRTCRequest, background_tasks: BackgroundTasks):
+async def offer(
+    request: SmallWebRTCRequest, background_tasks: BackgroundTasks, http_request: Request
+):
+    user_id = identity.resolve_cookie(http_request.cookies.get(identity.COOKIE_NAME))
+    if user_id is None:
+        raise HTTPException(status_code=403, detail="no valid identity")
+    rd = dict(request.request_data or {})
+    rd["user_id"] = user_id  # server-stamped; client-supplied value is ignored
+    request.request_data = rd
+
     async def webrtc_connection_callback(connection: SmallWebRTCConnection):
         runner_args = SmallWebRTCRunnerArguments(
             webrtc_connection=connection,
@@ -130,7 +154,7 @@ async def rtvi_proxy(
                     or body.get("requestData")
                     or active_session,
                 )
-                return await offer(webrtc_request, background_tasks)
+                return await offer(webrtc_request, background_tasks, request)
             if request.method == HTTPMethod.PATCH.value:
                 patch = SmallWebRTCPatchRequest(
                     pc_id=body["pc_id"],
@@ -220,8 +244,26 @@ STUDY_HTML = Path(__file__).parent / "static" / "study.html"
 
 @app.get("/study/", include_in_schema=False)
 @app.get("/study", include_in_schema=False)
-async def study_page():
-    return FileResponse(STUDY_HTML, media_type="text/html")
+async def study_page(request: Request, u: str | None = Query(None)):
+    cookie_uid = identity.resolve_cookie(request.cookies.get(identity.COOKIE_NAME))
+    token_uid = identity.resolve_cookie(u) if u else None
+    # URL param present + valid → set/refresh cookie, redirect to clean URL.
+    if token_uid is not None:
+        resp = RedirectResponse(url="/study/", status_code=303)
+        resp.set_cookie(
+            identity.COOKIE_NAME,
+            u,
+            max_age=identity.COOKIE_MAX_AGE,
+            httponly=True,
+            samesite="lax",
+            path="/",
+            secure=request.url.scheme == "https",
+        )
+        return resp
+    if cookie_uid is not None:
+        return FileResponse(STUDY_HTML, media_type="text/html")
+    # Neither cookie nor valid token → paste-your-code gate. Fail closed.
+    return HTMLResponse(identity.GATE_HTML)
 
 
 VOICE_TUTOR_DIR = Path.home() / ".voice-tutor"
