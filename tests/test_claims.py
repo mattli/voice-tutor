@@ -51,6 +51,9 @@ PARSEABLE_PAYLOAD_DOCS = [DOC_IDS[0], DOC_IDS[2]]
 # doc 2's real payload has an unescaped inner quote -> invalid JSON on the text
 # path (the structured tool-use path avoids this entirely).
 MALFORMED_PAYLOAD_DOC = DOC_IDS[1]
+# Sprint-1 sidecar tests are single-user; this is the user_id threaded through
+# write_claims/load_claims/generate_claims/load_fresh_claims call sites.
+USER_ID = "matt"
 
 CLAIMS_PY = Path(__file__).parent.parent / "claims.py"
 
@@ -539,8 +542,8 @@ def _unwrap_claim_dicts(loaded):
 
 def test_write_helper_writes_human_readable_sidecar(claims_docs_dir):
     doc_id = DOC_IDS[0]
-    claims.write_claims(doc_id, _claim_set_from_fixture(doc_id))
-    sidecar = claims_docs_dir / f"{doc_id}.claims.json"
+    claims.write_claims(USER_ID, doc_id, _claim_set_from_fixture(doc_id))
+    sidecar = claims_docs_dir / USER_ID / f"{doc_id}.claims.json"
     assert sidecar.exists(), f"sidecar not written at {sidecar}"
     raw = sidecar.read_text()
     json.loads(raw)
@@ -551,7 +554,7 @@ def test_write_helper_writes_human_readable_sidecar(claims_docs_dir):
 def test_sidecar_round_trips_field_for_field(claims_docs_dir):
     doc_id = DOC_IDS[1]
     claim_set = _claim_set_from_fixture(doc_id, n=4)
-    sidecar = claims.write_claims(doc_id, claim_set)
+    sidecar = claims.write_claims(USER_ID, doc_id, claim_set)
     loaded = json.loads(sidecar.read_text())
     got_dicts = _unwrap_claim_dicts(loaded)
     assert got_dicts == [c.to_dict() for c in claim_set]
@@ -578,7 +581,7 @@ def test_sidecar_round_trips_resolved_offsets(claims_docs_dir):
         claims.Claim("c1", "resolved claim", span, start, start + len(span), False, "exact"),
         claims.Claim("c2", "unresolved claim", "raw model anchor", None, None, True, "unresolved"),
     ]
-    sidecar = claims.write_claims(doc_id, claim_set)
+    sidecar = claims.write_claims(USER_ID, doc_id, claim_set)
     reloaded = claims._deserialize(sidecar.read_text())
     assert [c.to_dict() for c in reloaded] == [c.to_dict() for c in claim_set]
 
@@ -591,9 +594,9 @@ def test_generate_miss_then_disk_hit_skips_llm(claims_docs_dir):
 
     ctx, client, factory = _mock_anthropic(records)
     with ctx:
-        first = claims.generate_claims(doc_id, text)
+        first = claims.generate_claims(USER_ID, doc_id, text)
     assert client.messages.stream.call_count == 1
-    assert (claims_docs_dir / f"{doc_id}.claims.json").exists()
+    assert (claims_docs_dir / USER_ID / f"{doc_id}.claims.json").exists()
     assert isinstance(first, list) and first
     assert all(isinstance(c, claims.Claim) for c in first)
 
@@ -601,7 +604,7 @@ def test_generate_miss_then_disk_hit_skips_llm(claims_docs_dir):
     claims.DOCUMENTS_DIR = claims_docs_dir  # keep redirect after reload
     ctx2, client2, factory2 = _mock_anthropic(records)
     with ctx2:
-        second = claims.generate_claims(doc_id, text)
+        second = claims.generate_claims(USER_ID, doc_id, text)
     assert client2.messages.stream.call_count == 0, "cache-hit re-invoked the LLM"
     assert factory2.called is False, "cache-hit constructed an Anthropic client"
 
@@ -618,8 +621,8 @@ def test_miss_path_result_matches_persisted_sidecar(claims_docs_dir):
     records = _records([(f"claim {i}", a) for i, a in enumerate(anchors)])
     ctx, _client, _factory = _mock_anthropic(records)
     with ctx:
-        returned = claims.generate_claims(doc_id, text)
-    sidecar = claims_docs_dir / f"{doc_id}.claims.json"
+        returned = claims.generate_claims(USER_ID, doc_id, text)
+    sidecar = claims_docs_dir / USER_ID / f"{doc_id}.claims.json"
     loaded = json.loads(sidecar.read_text())
     assert _unwrap_claim_dicts(loaded) == [c.to_dict() for c in returned]
 
@@ -639,17 +642,17 @@ def test_generate_stamps_source_hash_and_hits_on_match(claims_docs_dir):
 
     ctx, client, _f = _mock_anthropic(records)
     with ctx:
-        first = claims.generate_claims(doc_id, text)
+        first = claims.generate_claims(USER_ID, doc_id, text)
     assert client.messages.stream.call_count == 1
 
     # The sidecar is stamped with the source hash.
-    data = json.loads((claims_docs_dir / f"{doc_id}.claims.json").read_text())
+    data = json.loads((claims_docs_dir / USER_ID / f"{doc_id}.claims.json").read_text())
     assert data["source_hash"] == claims._hash_source(text)
 
     # Same document -> hash matches -> cache hit, no LLM, no client built.
     ctx2, client2, factory2 = _mock_anthropic(records)
     with ctx2:
-        second = claims.generate_claims(doc_id, text)
+        second = claims.generate_claims(USER_ID, doc_id, text)
     assert client2.messages.stream.call_count == 0, "matching hash re-invoked LLM"
     assert factory2.called is False
     assert [c.to_dict() for c in second] == [c.to_dict() for c in first]
@@ -664,7 +667,7 @@ def test_generate_regenerates_on_source_hash_mismatch(claims_docs_dir):
 
     ctx, client, _f = _mock_anthropic(records)
     with ctx:
-        claims.generate_claims(doc_id, text)
+        claims.generate_claims(USER_ID, doc_id, text)
     assert client.messages.stream.call_count == 1
 
     # The served document drifted (e.g. the vault page was edited after caching)
@@ -673,11 +676,11 @@ def test_generate_regenerates_on_source_hash_mismatch(claims_docs_dir):
     assert claims._hash_source(changed) != claims._hash_source(text)
     ctx2, client2, _f2 = _mock_anthropic(records)
     with ctx2:
-        claims.generate_claims(doc_id, changed)
+        claims.generate_claims(USER_ID, doc_id, changed)
     assert client2.messages.stream.call_count == 1, "stale cache was not regenerated"
 
     # The rewritten sidecar now carries the CURRENT document's hash.
-    data = json.loads((claims_docs_dir / f"{doc_id}.claims.json").read_text())
+    data = json.loads((claims_docs_dir / USER_ID / f"{doc_id}.claims.json").read_text())
     assert data["source_hash"] == claims._hash_source(changed)
 
 
@@ -687,17 +690,38 @@ def test_generate_regenerates_when_sidecar_has_no_hash(claims_docs_dir):
     doc_id = DOC_IDS[2]
     text = _fixture_text(doc_id)
     stale = [claims.Claim("c1", "old claim", _real_anchors(text, 1)[0])]
-    claims.write_claims(doc_id, stale)  # no source_hash passed
-    assert claims._cached_source_hash(doc_id) is None
+    claims.write_claims(USER_ID, doc_id, stale)  # no source_hash passed
+    assert claims._cached_source_hash(USER_ID, doc_id) is None
 
     records = _records(
         [(f"claim {i}", a) for i, a in enumerate(_real_anchors(text, 3))]
     )
     ctx, client, _f = _mock_anthropic(records)
     with ctx:
-        claims.generate_claims(doc_id, text)
+        claims.generate_claims(USER_ID, doc_id, text)
     assert client.messages.stream.call_count == 1, "unverifiable cache not rebuilt"
-    assert claims._cached_source_hash(doc_id) == claims._hash_source(text)
+    assert claims._cached_source_hash(USER_ID, doc_id) == claims._hash_source(text)
+
+
+def _seed_fresh_sidecar(docs_dir, user_id, doc_id, text):
+    """Write a fresh sidecar (source_hash matching ``text``) for ``user_id``."""
+    user_dir = docs_dir / user_id
+    user_dir.mkdir(parents=True, exist_ok=True)
+    envelope = {
+        claims._HASH_KEY: claims._hash_source(text),
+        claims._CLAIMS_KEY: [c.to_dict() for c in _claim_set_from_fixture(DOC_IDS[0], n=1)],
+    }
+    (user_dir / f"{doc_id}.claims.json").write_text(json.dumps(envelope, indent=2))
+
+
+def test_load_fresh_claims_is_user_scoped(claims_docs_dir):
+    text = "Some doc text."
+    # Seed a fresh sidecar for matt only (reuse the file's existing sidecar-writing
+    # helper / source_hash computation).
+    _seed_fresh_sidecar(claims_docs_dir, user_id="matt", doc_id="D", text=text)
+    assert claims.load_fresh_claims("matt", "D", text) is not None
+    # Mirror image: sarah has no sidecar for D -> None (degrade to plain study).
+    assert claims.load_fresh_claims("sarah", "D", text) is None
 
 
 def test_documents_dir_defined_locally_not_reexported_from_documents():
@@ -748,10 +772,10 @@ def test_redirect_confines_writes_and_leaves_real_dir_untouched(
     records = _records([(f"claim {i}", a) for i, a in enumerate(anchors)])
     ctx, _c, _f = _mock_anthropic(records)
     with ctx:
-        claims.generate_claims(doc_id, text)
-    claims.write_claims(DOC_IDS[0], _claim_set_from_fixture(DOC_IDS[0]))
+        claims.generate_claims(USER_ID, doc_id, text)
+    claims.write_claims(USER_ID, DOC_IDS[0], _claim_set_from_fixture(DOC_IDS[0]))
 
-    written = list(claims_docs_dir.glob("*.claims.json"))
+    written = list(claims_docs_dir.glob("**/*.claims.json"))
     assert written, "no sidecars written under the redirected dir"
     for p in written:
         assert tmp_path in p.parents
