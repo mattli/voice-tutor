@@ -7,8 +7,10 @@ re-imports ``session_analysis_filename`` to write the file; ``app.py`` re-import
 ``find_analysis_path`` to look it up by session id. Because the on-disk name is
 date-first (``session-analysis-<YYYY-MM-DD-HHMMSS>-<shortid>.md``) the reader
 can't reconstruct the exact name from a session id alone — it lacks the start
-time — so it matches on the shortid the writer embeds. The round-trip
-(build → find) is the property the tests pin.
+time — so it matches on the shortid the writer embeds. Analyses live under a
+per-user ``<user_id>/`` subdirectory (``bot.py`` writes there, ``app.py`` passes
+``user_id`` to the finder) so the round-trip (build → find within
+``directory/<user_id>/``) is the property the tests pin.
 """
 
 from datetime import datetime
@@ -39,22 +41,26 @@ def session_analysis_filename(session_start: datetime, session_id: str | None) -
     return f"session-analysis-{ts}.md"
 
 
-def find_analysis_path(directory: Path, session_id: str) -> Path | None:
-    """Locate the session-analysis file for ``session_id`` under ``directory``.
+def find_analysis_path(directory: Path, user_id: str, session_id: str) -> Path | None:
+    """Locate the session-analysis file for ``session_id`` under ``directory/<user_id>/``.
 
     Files are named by :func:`session_analysis_filename` — date-first with a
     shortid suffix — so the exact name isn't reconstructable from the id alone.
     Match on the shortid (the first ``SHORTID_LEN`` chars of the id, embedded
-    verbatim by the writer) via a glob. Returns the matching path, or ``None`` if
-    none exists. On the astronomically unlikely shortid collision, returns the
-    first match by sorted name (deterministic).
+    verbatim by the writer) via a glob scoped to the user's subdirectory (so one
+    user's session id can never resolve into another user's analyses). Returns
+    the matching path, or ``None`` if none exists. On the astronomically
+    unlikely shortid collision, returns the first match by sorted name
+    (deterministic).
 
     The shortid must be alphanumeric (real UUID prefixes are hex); a non-alnum
     prefix — e.g. a caller passing glob metacharacters — yields ``None`` rather
-    than an over-broad glob.
+    than an over-broad glob. ``user_id`` is sanitized via ``Path(user_id).name``
+    so it can't escape ``directory`` via path traversal.
     """
     shortid = session_id[:SHORTID_LEN]
     if not shortid or not shortid.isalnum():
         return None
-    matches = sorted(directory.glob(f"session-analysis-*-{shortid}.md"))
+    user_dir = directory / Path(user_id).name
+    matches = sorted(user_dir.glob(f"session-analysis-*-{shortid}.md"))
     return matches[0] if matches else None
