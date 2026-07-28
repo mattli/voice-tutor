@@ -10,7 +10,7 @@ it is tested here with plain datetimes (no bot.py / pipecat / network / filesyst
 
 from datetime import datetime
 
-from session_naming import session_analysis_filename
+from session_naming import find_analysis_path, session_analysis_filename
 
 
 def test_uuid_session_id_yields_date_first_name_with_shortid():
@@ -22,7 +22,7 @@ def test_uuid_session_id_yields_date_first_name_with_shortid():
 def test_shortid_is_first_8_chars_of_session_id():
     start = datetime(2026, 7, 27, 16, 34, 41)
     fn = session_analysis_filename(start, "7beee170-47d1-418d-b35d-5cc56babaccc")
-    # shortid preserves the join to cost-log rows / artifacts/<full-uuid>.md
+    # shortid preserves the join to session-log rows / artifacts/<full-uuid>.md
     assert fn == "session-analysis-2026-07-27-163441-7beee170.md"
     assert "7beee170" in fn
 
@@ -53,3 +53,66 @@ def test_midnight_zero_padding():
     start = datetime(2026, 1, 2, 0, 0, 0)
     fn = session_analysis_filename(start, "abcd1234-ef")
     assert fn == "session-analysis-2026-01-02-000000-abcd1234.md"
+
+
+# --- find_analysis_path: the reader must agree with the writer -----------------
+def _write(directory, name):
+    p = directory / name
+    p.write_text("analysis")
+    return p
+
+
+def test_round_trip_builder_name_is_found_by_finder(tmp_path):
+    """The load-bearing property: a file written under the builder's name is
+    located by the finder from the *same* session id. app.py reads by session id;
+    bot.py wrote by session id. A finder-only test could pass while the two
+    schemes drift — this pins them together."""
+    session_id = "7beee170-47d1-418d-b35d-5cc56babaccc"
+    start = datetime(2026, 7, 27, 16, 34, 41)
+    written = _write(tmp_path, session_analysis_filename(start, session_id))
+    assert find_analysis_path(tmp_path, session_id) == written
+
+
+def test_round_trip_selects_the_right_session_among_many(tmp_path):
+    # Several sessions' files coexist in the flat folder; the finder returns the
+    # one whose shortid matches — not a neighbour.
+    ids = {
+        "7beee170-47d1-418d-b35d-5cc56babaccc": datetime(2026, 7, 27, 16, 34, 41),
+        "53a8c8db-8afb-44b0-ba7c-4a4b8c57d037": datetime(2026, 7, 22, 16, 14, 28),
+        "f6148c26-af09-491d-b644-1522db9f42c5": datetime(2026, 7, 26, 10, 23, 23),
+    }
+    written = {sid: _write(tmp_path, session_analysis_filename(st, sid)) for sid, st in ids.items()}
+    for sid, path in written.items():
+        assert find_analysis_path(tmp_path, sid) == path
+
+
+def test_finder_returns_none_when_absent(tmp_path):
+    _write(tmp_path, "session-analysis-2026-07-27-163441-7beee170.md")
+    assert find_analysis_path(tmp_path, "deadbeef-0000-0000-0000-000000000000") is None
+
+
+def test_finder_ignores_legacy_names_without_shortid(tmp_path):
+    # Pre-UUID date-only / date+timestamp files carry no shortid and belong to
+    # sessions the app never looks up by id — they must not match anything.
+    _write(tmp_path, "session-analysis-2026-04-15.md")
+    _write(tmp_path, "session-analysis-2026-04-17-184001.md")
+    assert find_analysis_path(tmp_path, "2026-04-15") is None
+    assert find_analysis_path(tmp_path, "20260417-xxxx") is None
+
+
+def test_finder_deterministic_on_shortid_collision(tmp_path):
+    # Two ids sharing the first 8 chars (vanishingly unlikely) -> first by sorted
+    # name, deterministically, never an exception.
+    a = _write(tmp_path, "session-analysis-2026-07-01-090000-7beee170.md")
+    _write(tmp_path, "session-analysis-2026-07-02-090000-7beee170.md")
+    got = find_analysis_path(tmp_path, "7beee170-aaaa-bbbb-cccc-dddddddddddd")
+    assert got == a  # earliest sorted name
+
+
+def test_finder_guards_against_glob_metacharacters(tmp_path):
+    # A non-hex/non-alnum prefix (e.g. glob metachars) must yield None, not an
+    # over-broad match against unrelated files.
+    _write(tmp_path, "session-analysis-2026-07-27-163441-7beee170.md")
+    assert find_analysis_path(tmp_path, "*") is None
+    assert find_analysis_path(tmp_path, "") is None
+    assert find_analysis_path(tmp_path, "ab*cdef0") is None

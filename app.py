@@ -36,6 +36,7 @@ from pipecat_ai_small_webrtc_prebuilt.frontend import SmallWebRTCPrebuiltUI
 import bot
 import claims
 import documents
+import session_naming
 import sessions
 
 HOST = os.getenv("VOICE_TUTOR_HOST", "0.0.0.0")
@@ -311,14 +312,14 @@ async def get_telemetry(session_id: str):
     artifact_path = ARTIFACTS_DIR / f"{safe_id}.md"
     usage_path = TRANSCRIPTS_DIR / f"{safe_id}.usage.json"
     summary_path = TRANSCRIPTS_DIR / f"{safe_id}.summary.md"
-    analysis_path = SESSION_ANALYSES_DIR / f"session-analysis-{safe_id}.md"
+    analysis_path = session_naming.find_analysis_path(SESSION_ANALYSES_DIR, safe_id)
     prompt_path = TRANSCRIPTS_DIR / f"{safe_id}.prompt.txt"
     doc_info = _lookup_session_doc(safe_id) or {"document_id": None, "document_title": None}
     return {
         "recap": artifact_path.read_text() if artifact_path.exists() else None,
         "cost": json.loads(usage_path.read_text()) if usage_path.exists() else None,
         "memory_append": summary_path.read_text() if summary_path.exists() else None,
-        "analysis": analysis_path.read_text() if analysis_path.exists() else None,
+        "analysis": analysis_path.read_text() if analysis_path else None,
         "has_prompt": prompt_path.exists(),
         # The frontend uses this to decide whether to wait for memory_append /
         # analysis on shorter sessions. Mirrors bot.py's MIN_SUMMARY_DURATION_SEC.
@@ -493,8 +494,8 @@ async def view_prompt(session_id: str):
 @app.get("/view/sessions/{session_id}/analysis", include_in_schema=False)
 async def view_analysis(session_id: str):
     safe_id = Path(session_id).name
-    path = SESSION_ANALYSES_DIR / f"session-analysis-{safe_id}.md"
-    if not path.exists():
+    path = session_naming.find_analysis_path(SESSION_ANALYSES_DIR, safe_id)
+    if path is None:
         raise HTTPException(status_code=404, detail="analysis not found for this session")
     return HTMLResponse(_render_viewer(
         "Per-session artifact",
