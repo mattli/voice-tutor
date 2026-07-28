@@ -208,6 +208,7 @@ from session_state import (
     load_most_recent_transcript_block,
     load_profile,
 )
+from session_naming import session_analysis_filename
 ARTIFACTS_DIR = VOICE_TUTOR_DIR / "artifacts"
 # Accumulating memory: one dated section per session, append-only.
 # Future: when this file exceeds ~2K tokens, compact older entries by summarizing
@@ -476,7 +477,14 @@ def generate_session_summary(stem: str, transcript: dict) -> dict | None:
     return {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
 
 
-def generate_session_analysis(stem: str, transcript: dict, summary: dict, tool_calls: list[dict]) -> dict | None:
+def generate_session_analysis(
+    stem: str,
+    transcript: dict,
+    summary: dict,
+    tool_calls: list[dict],
+    session_start: datetime,
+    session_id: str | None,
+) -> dict | None:
     prompt = ANALYSIS_PROMPT.format(
         usage_json=json.dumps(summary, indent=2),
         tool_calls_json=json.dumps(tool_calls, indent=2) if tool_calls else "[]",
@@ -494,7 +502,7 @@ def generate_session_analysis(stem: str, transcript: dict, summary: dict, tool_c
         print(f"[session-analysis] failed: {e}", file=sys.stderr, flush=True)
         return None
     header = f"# Session Analysis — {stem}\n\n"
-    out_path = SESSION_ANALYSIS_DIR / f"session-analysis-{stem}.md"
+    out_path = SESSION_ANALYSIS_DIR / session_analysis_filename(session_start, session_id)
     out_path.write_text(header + analysis)
     print(f"[session-analysis] wrote {out_path}", file=sys.stderr, flush=True)
     return {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
@@ -841,7 +849,14 @@ async def bot(runner_args):
                 append_to_memory(transcript, summary_path.read_text())
 
         if summary["session_duration_sec"] >= MIN_ANALYSIS_DURATION_SEC:
-            u = generate_session_analysis(stem, transcript, summary, usage.tool_calls)
+            u = generate_session_analysis(
+                stem,
+                transcript,
+                summary,
+                usage.tool_calls,
+                session_start,
+                study_meta["session_id"] if study_meta else None,
+            )
             if u:
                 post_input += u["input_tokens"]
                 post_output += u["output_tokens"]
