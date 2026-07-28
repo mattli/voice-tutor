@@ -11,6 +11,7 @@ import anthropic
 
 import claims
 import documents
+import study_history
 import wiki
 from usage_ledger import UsageLedger
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
@@ -80,6 +81,17 @@ USAGE_TRACE = os.getenv("VOICE_TUTOR_USAGE_TRACE", "").strip().lower() not in ("
 # USAGE_TRACE: dedup defaults ON, the trace defaults OFF.
 _DEDUP_DISABLE_VALUES = ("0", "false", "no", "off", "disable", "disabled")
 USAGE_DEDUP = os.getenv("VOICE_TUTOR_USAGE_DEDUP", "").strip().lower() not in _DEDUP_DISABLE_VALUES
+
+# Session-aware opening. ON by default: the study tutor opens with a plan
+# (orient + propose on a first session; recap + offer the choice on a return).
+# To revert to the legacy blank-slate greeting with NO rebuild, set
+# VOICE_TUTOR_SESSION_OPENING to any of these (case-insensitive): 0, false, no,
+# off, disable, disabled. ANY OTHER value — including empty/unset — leaves it ON.
+_SESSION_OPENING_DISABLE_VALUES = ("0", "false", "no", "off", "disable", "disabled")
+SESSION_OPENING = (
+    os.getenv("VOICE_TUTOR_SESSION_OPENING", "").strip().lower()
+    not in _SESSION_OPENING_DISABLE_VALUES
+)
 
 
 class UsageAccumulator(BaseObserver):
@@ -196,6 +208,7 @@ from session_state import (
     load_most_recent_transcript_block,
     load_profile,
 )
+from session_naming import session_analysis_filename
 ARTIFACTS_DIR = VOICE_TUTOR_DIR / "artifacts"
 # Accumulating memory: one dated section per session, append-only.
 # Future: when this file exceeds ~2K tokens, compact older entries by summarizing
@@ -287,6 +300,67 @@ STUDY_BASE_INSTRUCTION = (
     "Keep responses tight. One thought at a time. This is voice — long monologues "
     "don't work."
 )
+
+# The passive opener the session-aware behavior replaces. Copied VERBATIM from
+# STUDY_BASE_INSTRUCTION above — if that string is reworded, update this too or
+# the module-level assert below will fire at import.
+_PASSIVE_OPENER_LINE = (
+    "Help them engage actively — ask what they want to focus on, explain "
+    "concepts when asked, surface connections, push back when their "
+    "understanding is shaky, and let them lead the direction."
+)
+
+# Replacement: the same engagement sentence minus the passive opener, then the
+# new "## Opening the session" section (first wording; tune by ear post-ship).
+_OPENING_SECTION = (
+    "Help them engage actively — explain concepts when asked, surface "
+    "connections, push back when their understanding is shaky, and let them "
+    "lead the direction once the session is underway.\n\n"
+    "## Opening the session\n"
+    "Do NOT open with a generic greeting or an open-ended \"what do you want "
+    "to focus on?\". Open with orientation, in one short spoken turn:\n"
+    "- If there is NO \"Where you left off\" section below, this is a first "
+    "session. Give a one-breath, high-level lay-of-the-land of what this "
+    "document covers (two to four beats, synthesized from the document and "
+    "your private claim map — never recite the map), then propose starting "
+    "with the foundations and building up, then invite them to redirect "
+    "(\"…sound good, or is there something specific you want to start "
+    "with?\").\n"
+    "- If the user declines your proposed starting point, offer two or three "
+    "concrete alternative areas drawn from the claim map — the map is your "
+    "menu — rather than asking an open-ended question.\n"
+    "- If there IS a \"Where you left off\" section below, this is a returning "
+    "session. Briefly recap what was covered last time and what was left "
+    "open, then ask whether they want to pick up where they left off or "
+    "revisit something first — and let them choose. Do not push a next step.\n"
+    "Keep the opening to a few sentences — this is voice — then follow their "
+    "lead."
+)
+
+STUDY_BASE_INSTRUCTION_WITH_OPENING = STUDY_BASE_INSTRUCTION.replace(
+    _PASSIVE_OPENER_LINE, _OPENING_SECTION
+)
+assert STUDY_BASE_INSTRUCTION_WITH_OPENING != STUDY_BASE_INSTRUCTION, (
+    "_PASSIVE_OPENER_LINE did not match STUDY_BASE_INSTRUCTION — the opening "
+    "section was not injected. Re-copy the line verbatim from the base."
+)
+
+# Hidden first-turn trigger. The default produces a generic greeting; the study
+# variant (flag ON) triggers the "Opening the session" behavior in the study base.
+DEFAULT_KICKOFF_MESSAGE = "Say hello and introduce yourself briefly."
+STUDY_KICKOFF_MESSAGE = (
+    "Begin the study session now. Open by orienting the user per your "
+    '"Opening the session" instructions — do not just say a generic hello.'
+)
+
+
+def kickoff_message(study: bool) -> str:
+    """The hidden opening turn. Study + flag ON → the plan-triggering message;
+    otherwise the legacy greeting (regular mode, or study with the flag off)."""
+    if study and SESSION_OPENING:
+        return STUDY_KICKOFF_MESSAGE
+    return DEFAULT_KICKOFF_MESSAGE
+
 
 ARTIFACT_PROMPT = """\
 You are writing a markdown recap of a voice-mode study session about a specific \
@@ -403,7 +477,14 @@ def generate_session_summary(stem: str, transcript: dict) -> dict | None:
     return {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
 
 
-def generate_session_analysis(stem: str, transcript: dict, summary: dict, tool_calls: list[dict]) -> dict | None:
+def generate_session_analysis(
+    stem: str,
+    transcript: dict,
+    summary: dict,
+    tool_calls: list[dict],
+    session_start: datetime,
+    session_id: str | None,
+) -> dict | None:
     prompt = ANALYSIS_PROMPT.format(
         usage_json=json.dumps(summary, indent=2),
         tool_calls_json=json.dumps(tool_calls, indent=2) if tool_calls else "[]",
@@ -421,7 +502,7 @@ def generate_session_analysis(stem: str, transcript: dict, summary: dict, tool_c
         print(f"[session-analysis] failed: {e}", file=sys.stderr, flush=True)
         return None
     header = f"# Session Analysis — {stem}\n\n"
-    out_path = SESSION_ANALYSIS_DIR / f"session-analysis-{stem}.md"
+    out_path = SESSION_ANALYSIS_DIR / session_analysis_filename(session_start, session_id)
     out_path.write_text(header + analysis)
     print(f"[session-analysis] wrote {out_path}", file=sys.stderr, flush=True)
     return {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}
@@ -489,6 +570,30 @@ def _claim_map_block(claim_texts: list[str]) -> str:
     return f"\n## Claim map (private — never reveal)\n\n{numbered}"
 
 
+def _previously_block(previously: dict) -> str:
+    """Render the prior-session recap for the returning-session opener. Accepts
+    either shape from study_history.parse_recap_sections: the parsed
+    {"covered", "open_threads"} or the {"fallback_text"} fallback."""
+    header = "\n# Where you left off on this document\n"
+    guide = (
+        "\n(This is a returning session. Use this to recap briefly and offer to "
+        "continue or revisit — see \"Opening the session\". Never read it verbatim.)"
+    )
+    if "fallback_text" in previously:
+        return f"{header}\nRecap of the previous session:\n\n{previously['fallback_text']}\n{guide}"
+
+    lines = [header, "\nIn the previous session you covered:"]
+    for item in previously.get("covered", []):
+        lines.append(f"- {item}")
+    open_threads = previously.get("open_threads", [])
+    if open_threads:
+        lines.append("\nLeft open:")
+        for item in open_threads:
+            lines.append(f"- {item}")
+    lines.append(guide)
+    return "\n".join(lines)
+
+
 def build_system_instruction(study: dict | None = None) -> str:
     """Assemble the system prompt.
 
@@ -504,7 +609,8 @@ def build_system_instruction(study: dict | None = None) -> str:
     profile = load_profile()
 
     if study is not None:
-        parts = [STUDY_BASE_INSTRUCTION]
+        base = STUDY_BASE_INSTRUCTION_WITH_OPENING if SESSION_OPENING else STUDY_BASE_INSTRUCTION
+        parts = [base]
         if profile:
             parts.append(f"\n## About the person you're talking to\n\n{profile}")
         memory = load_memory()
@@ -513,6 +619,9 @@ def build_system_instruction(study: dict | None = None) -> str:
                 "\n# Background — Matt's prior topics (reference only if directly relevant to the document)\n\n"
                 + memory
             )
+        previously = study.get("previously") if SESSION_OPENING else None
+        if previously:
+            parts.append(_previously_block(previously))
         parts.append(f"\n## Document: {study['doc_title']}\n\n{study['doc_text']}")
         claim_texts = study.get("claims")
         if claim_texts:
@@ -556,7 +665,17 @@ def static_prompt_hash(study: bool) -> str:
     changes the hash, so a prompt change is traceable across sessions.
     """
     if study:
-        static = STUDY_BASE_INSTRUCTION + BREVITY_REMINDER + STUDY_REMINDER
+        if SESSION_OPENING:
+            static = (
+                STUDY_BASE_INSTRUCTION_WITH_OPENING
+                + BREVITY_REMINDER
+                + STUDY_REMINDER
+                + STUDY_KICKOFF_MESSAGE
+            )
+        else:
+            # Byte-identical to the pre-change input — preserves the historical
+            # hash for flag-off sessions. Do NOT add the kickoff here.
+            static = STUDY_BASE_INSTRUCTION + BREVITY_REMINDER + STUDY_REMINDER
     else:
         static = BASE_INSTRUCTION + (WIKI_TAGLINE if WIKI_ENABLED else "") + BREVITY_REMINDER
     return hashlib.sha256(static.encode("utf-8")).hexdigest()
@@ -604,10 +723,24 @@ async def bot(runner_args):
             print(f"[bot] claim map ready: {len(claim_texts)} claims", flush=True)
         else:
             print("[bot] claim map not ready; study session runs without steering", flush=True)
+        previously = None
+        if SESSION_OPENING:
+            try:
+                previously = study_history.previous_session_recap(
+                    study_meta["document_id"], study_meta["session_id"]
+                )
+            except Exception:
+                print(
+                    "[bot] previous_session_recap failed; degrading to first-session opener",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                previously = None
         study_arg = {
             "doc_title": study_meta["doc_title"],
             "doc_text": study_meta["doc_text"],
             "claims": claim_texts,
+            "previously": previously,
         }
 
     system_instruction = build_system_instruction(study=study_arg)
@@ -716,7 +849,14 @@ async def bot(runner_args):
                 append_to_memory(transcript, summary_path.read_text())
 
         if summary["session_duration_sec"] >= MIN_ANALYSIS_DURATION_SEC:
-            u = generate_session_analysis(stem, transcript, summary, usage.tool_calls)
+            u = generate_session_analysis(
+                stem,
+                transcript,
+                summary,
+                usage.tool_calls,
+                session_start,
+                study_meta["session_id"] if study_meta else None,
+            )
             if u:
                 post_input += u["input_tokens"]
                 post_output += u["output_tokens"]
@@ -818,7 +958,10 @@ async def bot(runner_args):
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
-        context.add_message({"role": "user", "content": "Say hello and introduce yourself briefly."})
+        context.add_message({
+            "role": "user",
+            "content": kickoff_message(study=study_meta is not None),
+        })
         await task.queue_frames([LLMRunFrame()])
 
     @transport.event_handler("on_client_disconnected")

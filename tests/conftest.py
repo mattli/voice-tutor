@@ -396,3 +396,30 @@ def session_state_tmp(tmp_path, monkeypatch):
     assert real_root.exists() == real_existed, "test created/removed ~/.voice-tutor"
     after = _ss_snapshot(real_root)
     assert after == before, "production ~/.voice-tutor was mutated by a test"
+
+
+@pytest.fixture
+def study_history_tmp(tmp_path, monkeypatch):
+    """Redirect study_history's ledger + artifacts constants to per-test tmp.
+
+    study_history reads COST_LOG_JSONL_PATH / ARTIFACTS_DIR at call time, so
+    patching the module attributes is the real resolution path. Guards the real
+    vault cost-log and ~/.voice-tutor artifacts dir against mutation.
+    """
+    import study_history as sh
+
+    real_ledger = sh.COST_LOG_JSONL_PATH
+    real_artifacts = sh.ARTIFACTS_DIR
+    before_ledger = _file_state(real_ledger)
+    before_artifacts = _snapshot(real_artifacts)
+
+    ledger = tmp_path / "cost-log.jsonl"
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(sh, "COST_LOG_JSONL_PATH", ledger)
+    monkeypatch.setattr(sh, "ARTIFACTS_DIR", artifacts)
+
+    yield ledger, artifacts
+
+    assert _file_state(real_ledger) == before_ledger, "production cost-log.jsonl mutated"
+    assert _snapshot(real_artifacts) == before_artifacts, "production artifacts dir mutated"
