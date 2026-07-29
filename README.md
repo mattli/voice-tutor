@@ -52,10 +52,13 @@ The app reads and writes `~/.voice-tutor/`. Create it:
 mkdir -p ~/.voice-tutor
 ```
 
-Optional but recommended: seed `~/.voice-tutor/profile.md` with a short
-identity blurb. The model loads it verbatim into the system prompt so the
-tutor knows who it's talking to. A few sentences is enough; see the **Data**
-section below for the full layout.
+The app now requires an **identity** to be usable — see **Identity & isolation**
+above to create `~/.voice-tutor/tokens.json` and open the app via an invite link.
+
+Optional but recommended: seed `~/.voice-tutor/profiles/<user_id>.md` (e.g.
+`profiles/matt.md`) with a short identity blurb. The model loads it verbatim into
+the system prompt so the tutor knows who it's talking to. A few sentences is
+enough; see the **Data** section below for the full layout.
 
 If you want to carry over an existing setup from another machine, copy the
 whole directory over:
@@ -104,6 +107,28 @@ Open `http://localhost:7860/chat/` in a browser (or the Tailscale URL on phone).
 - **TTS**: Cartesia Sonic-3 (voice "British Reading Lady")
 - **Transport**: SmallWebRTC via Pipecat (browser ↔ server)
 
+## Identity & isolation (multi-user)
+
+Each user is established by an **invite token** carried in a long-lived HttpOnly
+cookie, resolved server-side to a `user_id` on every request. Data is isolated
+per user — every storage helper is scoped to the caller's `user_id`, so one user
+never sees another's documents, sessions, recaps, memory, or costs.
+
+- **Token registry** — `~/.voice-tutor/tokens.json` maps `{token: user_id}`, e.g.
+  `{"<random-token>": "matt"}`. It's a credential: never commit it, never put it
+  in the vault. Create it by hand.
+- **Invite link** — open `http://localhost:7860/study/?u=<token>` once; the server
+  sets the cookie and redirects to `/study/`. With no valid cookie or token,
+  `/study/` serves a paste-your-code gate (fail-closed — never a document picker).
+- **user_id** is a filename-safe slug (`[a-z0-9_-]`, e.g. `matt`, `sarah`). The
+  token is the secret; the id is just a namespace.
+- **Matt-only surfaces** — the system-prompt, session-analysis, and global
+  cost-log viewers are restricted to `user_id == "matt"`, and other users'
+  telemetry omits them. Memory and profile viewers stay per-user and visible.
+
+Existing single-user data is migrated into per-user namespaces (and backfilled to
+`user_id="matt"`) by `migrate_identity.py` — archive-first and idempotent.
+
 ## Modes
 
 Two voice modes share the same pipeline (Deepgram → Sonnet → Cartesia), the same
@@ -142,22 +167,24 @@ The document-grounded mode.
 - The "Refresh" button on the ended view fetches `GET /api/sessions/<id>/artifact`
   and renders the markdown inline once it exists
 
-Storage:
-- `~/.voice-tutor/documents/<uuid>-<original-filename>` — original upload
-- `~/.voice-tutor/documents/<uuid>.txt` — extracted text used at session start
-- `~/.voice-tutor/transcripts/<uuid>.json` — study session transcripts (UUID
+Storage (namespaced per user — see **Identity & isolation**):
+- `~/.voice-tutor/documents/<user_id>/<uuid>-<original-filename>` — original upload
+- `~/.voice-tutor/documents/<user_id>/<uuid>.txt` — extracted text used at session start
+- `~/.voice-tutor/transcripts/<user_id>/<uuid>.json` — study session transcripts (UUID
   stem instead of datetime; the `/study/` page generates the UUID client-side)
-- `~/.voice-tutor/artifacts/<uuid>.md` — the recap
-- A separate `session-log.jsonl` row with `kind: "artifact"` accounts for the
-  artifact-generation Haiku call
+- `~/.voice-tutor/artifacts/<user_id>/<uuid>.md` — the recap
+- A separate `session-log.jsonl` row with `kind: "artifact"` (carrying a top-level
+  `user_id`) accounts for the artifact-generation Haiku call
 
 ## Data
 
-Stored at `~/.voice-tutor/`:
+Stored at `~/.voice-tutor/`, namespaced per user (see **Identity & isolation**):
 
-- `profile.md` — hand-maintained identity profile, loaded into system prompt
-- `transcripts/` — JSON transcripts saved on session disconnect, last 3 loaded at session start
-- `transcripts/<session>.usage.json` — per-session cost breakdown sidecar (see below)
+- `profiles/<user_id>.md` — hand-maintained identity profile, loaded into system prompt
+- `memory/<user_id>.md` — cross-session memory, appended after each session
+- `transcripts/<user_id>/` — JSON transcripts saved on session disconnect, last 3 loaded at session start
+- `transcripts/<user_id>/<session>.usage.json` — per-session cost breakdown sidecar (see below)
+- `tokens.json` — invite-token registry (a credential; not per-user, never committed)
 
 ## Usage telemetry
 
