@@ -24,21 +24,27 @@ SESSION_LOG_JSONL_PATH = (
 )
 
 
-def list_study_sessions() -> list[dict]:
-    """Return completed study sessions, newest first.
+def list_study_sessions(user_id: str) -> list[dict]:
+    """Return completed study sessions for ``user_id`` only, newest first.
+
+    ``user_id`` is REQUIRED — this is a scoped listing, not a global one. Rows
+    whose ``user_id`` does not match the argument are excluded entirely
+    (structural filter), so one user can never see another user's session
+    history. There is no unscoped overload.
 
     Each row is a mapping with exactly:
       - ``session_id``
-      - ``document_title`` (resolved via ``documents.load_document(document_id)``;
+      - ``document_title`` (resolved via ``documents.load_document(user_id, document_id)``;
         ``None`` if the document no longer resolves)
       - ``session_start`` (raw ISO string from the ledger, unmodified)
       - ``session_duration_sec``
       - ``cost_total_usd``
 
-    A row qualifies iff ``kind == "session"``, ``mode == "study"``, and it carries
-    a non-null ``document_id``. Open-chat / doc-less / non-session (e.g. artifact)
-    rows are excluded. Malformed / non-JSON lines are skipped, never fatal. An
-    empty or absent ledger yields an empty list.
+    A row qualifies iff ``kind == "session"``, ``mode == "study"``, its
+    ``user_id`` matches the argument, and it carries a non-null
+    ``document_id``. Open-chat / doc-less / non-session (e.g. artifact) /
+    other-user rows are excluded. Malformed / non-JSON lines are skipped,
+    never fatal. An empty or absent ledger yields an empty list.
     """
     # Read the path from the module namespace at call time so monkeypatch works.
     path = SESSION_LOG_JSONL_PATH
@@ -61,10 +67,12 @@ def list_study_sessions() -> list[dict]:
                 continue
             if entry.get("mode") != "study":
                 continue
+            if entry.get("user_id") != user_id:
+                continue
             doc_id = entry.get("document_id")
             if doc_id is None:
                 continue
-            loaded = documents.load_document(doc_id)
+            loaded = documents.load_document(user_id, doc_id)
             rows.append(
                 {
                     "session_id": entry.get("session_id"),
@@ -79,3 +87,41 @@ def list_study_sessions() -> list[dict]:
     # so equal-session_start ties keep their relative order and never raise.
     rows.sort(key=lambda r: r.get("session_start") or "", reverse=True)
     return rows
+
+
+MATT_ONLY_USER = "matt"
+
+
+def session_belongs_to(user_id: str, session_id: str) -> bool:
+    """True iff a session row with this session_id carries this user_id."""
+    path = SESSION_LOG_JSONL_PATH
+    if not path.exists():
+        return False
+    with path.open() as f:
+        for line in f:
+            try:
+                e = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(e, dict) and e.get("kind") == "session" and e.get("session_id") == session_id:
+                return e.get("user_id") == user_id
+    return False
+
+
+def can_view_machine_artifacts(user_id: str) -> bool:
+    """Prompt + analysis + global cost-log are about the MACHINE, not the tester's
+    learning. Only Matt may view them. (The prompt embeds the private claim map,
+    which reading would spoil the steering the validation gate measures.)"""
+    return user_id == MATT_ONLY_USER
+
+
+def redact_telemetry_for_user(telemetry: dict, user_id: str) -> dict:
+    """Strip Matt-only fields from the telemetry composite for non-Matt users so
+    the single endpoint can't leak the analysis/prompt through a side door. The
+    tester keeps their own learning artifacts (recap, cost, memory_append)."""
+    if can_view_machine_artifacts(user_id):
+        return telemetry
+    redacted = dict(telemetry)
+    redacted["analysis"] = None
+    redacted["has_prompt"] = False
+    return redacted

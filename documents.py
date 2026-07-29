@@ -72,8 +72,12 @@ def _derive_title(text: str, filename: str) -> str:
     return Path(filename).stem
 
 
-def _summary_path(doc_id: str) -> Path:
-    return DOCUMENTS_DIR / f"{doc_id}.summary.txt"
+def user_dir(user_id: str) -> Path:
+    return DOCUMENTS_DIR / Path(user_id).name
+
+
+def _summary_path(user_id: str, doc_id: str) -> Path:
+    return user_dir(user_id) / f"{doc_id}.summary.txt"
 
 
 def _generate_summary(text: str) -> str | None:
@@ -91,7 +95,7 @@ def _generate_summary(text: str) -> str | None:
         return None
 
 
-def save_upload(filename: str, raw: bytes) -> dict:
+def save_upload(user_id: str, filename: str, raw: bytes) -> dict:
     """Validate, extract, and persist a document. Returns metadata."""
     if len(raw) > MAX_UPLOAD_BYTES:
         raise UploadError(413, f"file too large (max {MAX_UPLOAD_BYTES} bytes)")
@@ -108,15 +112,16 @@ def save_upload(filename: str, raw: bytes) -> dict:
     if not text:
         raise UploadError(422, "could not extract any text from this file")
 
-    DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    d = user_dir(user_id)
+    d.mkdir(parents=True, exist_ok=True)
     doc_id = str(uuid.uuid4())
     safe_name = Path(filename).name
-    (DOCUMENTS_DIR / f"{doc_id}-{safe_name}").write_bytes(raw)
-    (DOCUMENTS_DIR / f"{doc_id}.txt").write_text(text)
+    (d / f"{doc_id}-{safe_name}").write_bytes(raw)
+    (d / f"{doc_id}.txt").write_text(text)
 
     summary = _generate_summary(text)
     if summary:
-        _summary_path(doc_id).write_text(summary)
+        _summary_path(user_id, doc_id).write_text(summary)
 
     return {
         "document_id": doc_id,
@@ -126,20 +131,21 @@ def save_upload(filename: str, raw: bytes) -> dict:
     }
 
 
-async def list_documents() -> list[dict]:
-    if not DOCUMENTS_DIR.exists():
+async def list_documents(user_id: str) -> list[dict]:
+    d = user_dir(user_id)
+    if not d.exists():
         return []
     docs = []
     # Skip the .summary.txt sidecars; they're not their own documents.
-    txt_paths = [p for p in sorted(DOCUMENTS_DIR.glob("*.txt")) if not p.name.endswith(".summary.txt")]
+    txt_paths = [p for p in sorted(d.glob("*.txt")) if not p.name.endswith(".summary.txt")]
     needs_backfill: list[tuple[int, str]] = []  # (index, text) for parallel summarization
     for txt_path in txt_paths:
         doc_id = txt_path.stem
         text = txt_path.read_text()
-        originals = [p for p in DOCUMENTS_DIR.glob(f"{doc_id}-*") if p != txt_path and not p.name.endswith(".summary.txt")]
+        originals = [p for p in d.glob(f"{doc_id}-*") if p != txt_path and not p.name.endswith(".summary.txt")]
         original = originals[0] if originals else txt_path
         display_name = original.name.removeprefix(f"{doc_id}-")
-        summary_path = _summary_path(doc_id)
+        summary_path = _summary_path(user_id, doc_id)
         summary = summary_path.read_text().strip() if summary_path.exists() else None
         if summary is None:
             needs_backfill.append((len(docs), text))
@@ -157,19 +163,20 @@ async def list_documents() -> list[dict]:
         )
         for (idx, _text), summary in zip(needs_backfill, results):
             if summary:
-                _summary_path(docs[idx]["document_id"]).write_text(summary)
+                _summary_path(user_id, docs[idx]["document_id"]).write_text(summary)
                 docs[idx]["summary"] = summary
 
     docs.sort(key=lambda d: d["uploaded_at"], reverse=True)
     return docs
 
 
-def load_document(doc_id: str) -> tuple[str, str] | None:
+def load_document(user_id: str, doc_id: str) -> tuple[str, str] | None:
     """Return (title, text) or None if not found."""
-    txt_path = DOCUMENTS_DIR / f"{doc_id}.txt"
+    d = user_dir(user_id)
+    txt_path = d / f"{doc_id}.txt"
     if not txt_path.exists():
         return None
     text = txt_path.read_text()
-    originals = [p for p in DOCUMENTS_DIR.glob(f"{doc_id}-*") if p != txt_path]
+    originals = [p for p in d.glob(f"{doc_id}-*") if p != txt_path]
     original_name = originals[0].name.removeprefix(f"{doc_id}-") if originals else f"{doc_id}.txt"
     return _derive_title(text, original_name), text

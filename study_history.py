@@ -42,8 +42,14 @@ def parse_recap_sections(text: str) -> dict:
     return {"covered": covered, "open_threads": open_threads}
 
 
-def previous_session_recap(document_id, exclude_session_id):
+def previous_session_recap(user_id, document_id, exclude_session_id):
     """The newest prior study session's parsed recap for ``document_id``, or None.
+
+    Scoped to ``user_id``: ledger rows belonging to another user (or missing
+    user_id) are excluded, and the recap artifact is resolved under the
+    user's own subdirectory. This is the isolation boundary that prevents one
+    user's "where you left off" recap from leaking into another user's
+    session opener.
 
     Newest-only, no walk-back: if the single newest qualifying session has no
     recap artifact, return None rather than an older session's recap. A stale
@@ -65,6 +71,8 @@ def previous_session_recap(document_id, exclude_session_id):
                 continue
             if entry.get("kind") != "session" or entry.get("mode") != "study":
                 continue
+            if entry.get("user_id") != user_id:
+                continue
             if entry.get("document_id") != document_id:
                 continue
             sid = entry.get("session_id")
@@ -76,7 +84,7 @@ def previous_session_recap(document_id, exclude_session_id):
 
     if best_sid is None:
         return None
-    artifact = ARTIFACTS_DIR / f"{best_sid}.md"
+    artifact = ARTIFACTS_DIR / user_id / f"{best_sid}.md"
     if not artifact.exists():
         return None  # newest-only: do not walk back to an older recap
     try:

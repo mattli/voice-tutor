@@ -2,9 +2,10 @@
 
 This is the ONLY input source for c8-c10. Each MOVED_HELPERS name maps to a list
 of concrete argument tuples (representative + edge/error cases). Filesystem-touching
-helpers take no positional args (they read module-level Path constants redirected by
-the ``session_state_tmp`` fixture); their CASES entry documents the seeded-state
-scenarios exercised in the branch-coverage tests.
+helpers take only a ``user_id`` positional arg (the rest of the scenario is set up
+via module-level Path constants redirected by the ``session_state_tmp`` fixture);
+their CASES entry documents the seeded-state scenarios exercised in the
+branch-coverage tests.
 
 The manifest literals MOVED_HELPERS / MOVED_CONSTANTS are re-derived and pinned to
 hardcoded ground-truth in test_session_state_manifest.py.
@@ -22,8 +23,8 @@ MOVED_HELPERS = [
 ]
 
 MOVED_CONSTANTS = [
-    "PROFILE_PATH",
-    "MEMORY_PATH",
+    "PROFILES_DIR",
+    "MEMORY_DIR",
     "TRANSCRIPTS_DIR",
     "VOICE_TUTOR_DIR",
 ]
@@ -49,17 +50,18 @@ NOON_TRANSCRIPT = {
 }
 
 # --- CASES: helper name -> list of concrete argument tuples ------------------
-# For FS helpers the tuple is empty () and the scenario is set up by the test via
-# the hermetic tmp-dir fixture; the entries here enumerate the representative
-# invocations so c10 can call both import paths uniformly.
+# For FS helpers the tuple carries only the user_id ("matt",) and the rest of the
+# scenario is set up by the test via the hermetic tmp-dir fixture; the entries
+# here enumerate the representative invocations so c10 can call both import
+# paths uniformly.
 CASES = {
-    "load_profile": [()],
-    "load_memory": [()],
+    "load_profile": [("matt",)],
+    "load_memory": [("matt",)],
     "append_to_memory": [
-        (SAMPLE_TRANSCRIPT, "- discussed X\n- decided Y"),
-        (SAMPLE_TRANSCRIPT, "   surrounding whitespace   "),
+        ("matt", SAMPLE_TRANSCRIPT, "- discussed X\n- decided Y"),
+        ("matt", SAMPLE_TRANSCRIPT, "   surrounding whitespace   "),
     ],
-    "load_most_recent_transcript_block": [()],
+    "load_most_recent_transcript_block": [("matt",)],
     "_format_memory_date": [
         ("2026-04-14T09:05:00",),
         ("2026-01-01T00:07:00",),   # midnight -> 12 AM

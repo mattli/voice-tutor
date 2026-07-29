@@ -1193,8 +1193,8 @@
           renderTelemetry(data, target);
           const minSec = data.min_summary_sec || DEFAULT_MIN_FULL_TELEMETRY_SEC;
           const expectsSummary = elapsedAtEndSec >= minSec;
-          const done = data.recap && data.cost && data.has_prompt
-            && (!expectsSummary || (data.memory_append && data.analysis));
+          const done = data.recap && data.cost && (!window.__isMatt || data.has_prompt)
+            && (!expectsSummary || (data.memory_append && (!window.__isMatt || data.analysis)));
           if (done) {
             clearInterval(pollTimer); pollTimer = null;
             return;
@@ -1230,11 +1230,11 @@
 
     if (data.cost && $('diag-cost').style.display === 'none') renderCost(data.cost);
     if (data.memory_append && $('diag-memory').style.display === 'none') renderMemoryAppend(data.memory_append);
-    if (data.analysis && $('diag-analysis').style.display === 'none') {
+    if (window.__isMatt && data.analysis && $('diag-analysis').style.display === 'none') {
       $('analysis-link').href = `/view/sessions/${sid}/analysis`;
       $('diag-analysis').style.display = '';
     }
-    if (data.has_prompt && $('diag-prompt').style.display === 'none') {
+    if (window.__isMatt && data.has_prompt && $('diag-prompt').style.display === 'none') {
       $('prompt-link').href = `/view/sessions/${sid}/prompt`;
       $('diag-prompt').style.display = '';
     }
@@ -1436,6 +1436,20 @@
   // session (browser back from a viewer page lands here). Otherwise show
   // the picker normally.
   (async () => {
+    // Matt-only surfaces (cost-log, prompt, analysis) are hidden for testers.
+    // Set this before any telemetry render (loadSessionView below can render
+    // before loadDocs() runs), so __isMatt is always defined by then.
+    try {
+      const me = await fetch('/api/whoami').then(r => r.ok ? r.json() : null);
+      window.__isMatt = !!(me && me.user_id === 'matt');
+    } catch { window.__isMatt = false; }
+    if (!window.__isMatt) {
+      // Hide the doc-agnostic cost-log context links (diag-cost section link
+      // and footer context-links link — both share this data-base).
+      document.querySelectorAll('.js-context-link[data-base="/view/cost-log"]')
+        .forEach(a => { const li = a.closest('li') || a; li.style.display = 'none'; });
+    }
+
     const params = new URLSearchParams(location.search);
     const urlSession = params.get('session');
     if (urlSession) {

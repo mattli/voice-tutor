@@ -477,13 +477,15 @@ def _hash_source(document_text: str) -> str:
     return hashlib.sha256(document_text.encode("utf-8")).hexdigest()
 
 
-def _claims_path(doc_id: str) -> Path:
-    """Sidecar path for ``doc_id``'s claim set, beside the document.
+def _claims_path(user_id: str, doc_id: str) -> Path:
+    """Sidecar path for ``user_id``'s ``doc_id`` claim set, beside the document.
 
     Resolves ``DOCUMENTS_DIR`` at call time (module attribute lookup) so a test
-    that monkeypatches ``claims.DOCUMENTS_DIR`` redirects the write.
+    that monkeypatches ``claims.DOCUMENTS_DIR`` redirects the write. ``user_id``
+    is sanitized via ``Path(user_id).name`` (mirrors documents.py's per-user
+    namespacing) so it can never escape ``DOCUMENTS_DIR`` via path segments.
     """
-    return DOCUMENTS_DIR / f"{doc_id}.claims.json"
+    return DOCUMENTS_DIR / Path(user_id).name / f"{doc_id}.claims.json"
 
 
 def _serialize(claims: list[Claim], source_hash: str | None = None) -> str:
@@ -530,17 +532,18 @@ def _deserialize(text: str) -> list[Claim]:
 
 
 def write_claims(
-    doc_id: str, claims: list[Claim], source_hash: str | None = None
+    user_id: str, doc_id: str, claims: list[Claim], source_hash: str | None = None
 ) -> Path:
-    """Persist ``claims`` to the ``{doc_id}.claims.json`` sidecar; return its path.
+    """Persist ``claims`` to ``user_id``'s ``{doc_id}.claims.json`` sidecar; return its path.
 
     Writes human-readable, indented JSON next to the document, mirroring
-    documents._summary_path/save_upload's sidecar write. Creates ``DOCUMENTS_DIR``
-    if needed. The write is ATOMIC (temp file + os.replace) so an interrupted
-    write never leaves a half-written sidecar that would poison the cache. Pass
-    ``source_hash`` to stamp the sidecar with the hash of the source document.
+    documents._summary_path/save_upload's sidecar write. Creates the per-user
+    subdirectory (``DOCUMENTS_DIR / user_id``) if needed. The write is ATOMIC
+    (temp file + os.replace) so an interrupted write never leaves a
+    half-written sidecar that would poison the cache. Pass ``source_hash`` to
+    stamp the sidecar with the hash of the source document.
     """
-    path = _claims_path(doc_id)
+    path = _claims_path(user_id, doc_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(_serialize(claims, source_hash), encoding="utf-8")
@@ -548,22 +551,22 @@ def write_claims(
     return path
 
 
-def load_claims(doc_id: str) -> list[Claim] | None:
-    """Return the cached claim set for ``doc_id``, or None if no sidecar exists."""
-    path = _claims_path(doc_id)
+def load_claims(user_id: str, doc_id: str) -> list[Claim] | None:
+    """Return the cached claim set for ``user_id``'s ``doc_id``, or None if absent."""
+    path = _claims_path(user_id, doc_id)
     if not path.exists():
         return None
     return _deserialize(path.read_text(encoding="utf-8"))
 
 
-def _cached_source_hash(doc_id: str) -> str | None:
-    """Return the ``source_hash`` stamped on ``doc_id``'s sidecar, or None.
+def _cached_source_hash(user_id: str, doc_id: str) -> str | None:
+    """Return the ``source_hash`` stamped on ``user_id``'s ``doc_id`` sidecar, or None.
 
     None when no sidecar exists, when a sidecar predates hashing (no stamp), or
     when the sidecar is unreadable/corrupt — in every case the cache cannot be
     verified, so callers regenerate rather than crash.
     """
-    path = _claims_path(doc_id)
+    path = _claims_path(user_id, doc_id)
     if not path.exists():
         return None
     try:
@@ -573,8 +576,8 @@ def _cached_source_hash(doc_id: str) -> str | None:
     return data.get(_HASH_KEY) if isinstance(data, dict) else None
 
 
-def load_fresh_claims(doc_id: str, document_text: str) -> list[Claim] | None:
-    """Return the cached claim set for ``doc_id`` ONLY if it is fresh; else None.
+def load_fresh_claims(user_id: str, doc_id: str, document_text: str) -> list[Claim] | None:
+    """Return the cached claim set for ``user_id``'s ``doc_id`` ONLY if fresh; else None.
 
     "Fresh" means a sidecar exists AND its stamped ``source_hash`` matches the
     hash of ``document_text`` — i.e. the cache was generated from exactly the
@@ -584,17 +587,19 @@ def load_fresh_claims(doc_id: str, document_text: str) -> list[Claim] | None:
     stale, or unreadable), proceeds WITHOUT the claim-map section rather than
     blocking on a 30-60s live extraction. Extraction is warmed separately when the
     document is selected. Returns None (never raises) on any read/parse failure.
+    ``user_id`` is required and scopes the lookup — a user with no sidecar for
+    ``doc_id`` gets None even if another user has a fresh one.
     """
-    if _cached_source_hash(doc_id) != _hash_source(document_text):
+    if _cached_source_hash(user_id, doc_id) != _hash_source(document_text):
         return None
     try:
-        return load_claims(doc_id)
+        return load_claims(user_id, doc_id)
     except (ValueError, OSError, ClaimParseError):
         return None
 
 
-def generate_claims(doc_id: str, document_text: str) -> list[Claim]:
-    """Get-or-create the claim set for ``doc_id``, generated once per document.
+def generate_claims(user_id: str, doc_id: str, document_text: str) -> list[Claim]:
+    """Get-or-create the claim set for ``user_id``'s ``doc_id``, generated once per document.
 
     Cache integrity is keyed on the document's content hash: the sidecar is
     reused (NO LLM call) only when its stamped ``source_hash`` matches the hash
@@ -602,9 +607,11 @@ def generate_claims(doc_id: str, document_text: str) -> list[Claim]:
     current text (the served document drifted since the rubric was cached), OR it
     is corrupt/unreadable, the (mocked-in-tests) LLM decomposition re-runs and the
     sidecar is rewritten. The return type is identical on both paths: ``list[Claim]``.
+    ``user_id`` is required and scopes both the cache read and the write — two
+    users studying the same ``doc_id`` never share a sidecar.
     """
     current_hash = _hash_source(document_text)
-    path = _claims_path(doc_id)
+    path = _claims_path(user_id, doc_id)
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -613,5 +620,5 @@ def generate_claims(doc_id: str, document_text: str) -> list[Claim]:
         except (ValueError, OSError, ClaimParseError):
             pass  # corrupt / unreadable / malformed -> regenerate
     claims = extract_claims(document_text)
-    write_claims(doc_id, claims, source_hash=current_hash)
+    write_claims(user_id, doc_id, claims, source_hash=current_hash)
     return claims
