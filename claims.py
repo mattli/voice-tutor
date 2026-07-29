@@ -36,12 +36,19 @@ See :class:`Claim` for the full contract.
 
 import hashlib
 import json
+import logging
 import os
 import unicodedata
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import anthropic
+
+# Module logger. Rejection events (see ClaimInputTooLong) are emitted here so
+# each rejection is a durable app-log line — evidence for tuning CLAIM_MAX_WORDS
+# later (goal Part 2: "Log every rejection with the doc's word count"). A real
+# logger (not print) so callers/tests can capture it via the logging machinery.
+_log = logging.getLogger(__name__)
 
 # Storage root, mirroring documents.DOCUMENTS_DIR (Path.home()/".voice-tutor"/
 # "documents"). Defined LOCALLY here — deliberately NOT imported/re-exported from
@@ -66,6 +73,15 @@ MODEL = "claude-sonnet-5"
 # The remaining ceiling is the input bound (MAX_DOC_CHARS_IN), tracked in backlog.
 MAX_TOKENS = 16_000
 MAX_DOC_CHARS_IN = 100_000
+
+# Input tripwire (goal Part 2). A named constant well BEFORE the measured cliff
+# (the 16K output budget above chokes, minutes of latency, unusable 300-claim
+# rubrics on very long docs), NOT a tuned "right" number — a decade chosen over
+# precision, adjustable by evidence later (every rejection is logged with the
+# doc's word count). A document whose word count STRICTLY EXCEEDS this bound is
+# refused at the warm seam with a typed, catchable ClaimInputTooLong before any
+# extraction call fires; a doc exactly at the bound is allowed through.
+CLAIM_MAX_WORDS = 10_000
 # Bounded retries for RETRYABLE extraction outcomes only (empty claim list,
 # transient API errors) — never for max_tokens truncation, which is deterministic.
 MAX_EXTRACT_ATTEMPTS = 3
@@ -156,6 +172,33 @@ class ClaimExtractionTruncated(ClaimParseError):
     retried — retrying burns tokens to hit the same wall. It signals that the
     document's claim set exceeds the output budget; raise the input/output bound.
     """
+
+
+class ClaimInputTooLong(Exception):
+    """Raised at the warm seam when a document exceeds :data:`CLAIM_MAX_WORDS`.
+
+    The INPUT-side tripwire (goal Part 2), deliberately distinct from
+    :class:`ClaimParseError` / :class:`ClaimExtractionTruncated`: those signal an
+    output/parse failure AFTER a live model call, whereas this fires BEFORE any
+    extraction call is made, on the raw document text. A direct subclass of
+    ``Exception`` (NOT of ClaimParseError or ClaimExtractionTruncated) so a caller
+    can catch this specific condition without also swallowing parse/truncation
+    errors, and vice versa.
+
+    It is a typed, catchable condition — not an exception trace leaked to the
+    user, not a silent empty rubric. The message names the document's word count,
+    the limit, and the remedy (split or excerpt), so the transport layer can
+    surface it verbatim. ``word_count`` is also exposed as an attribute for
+    programmatic callers.
+    """
+
+    def __init__(self, word_count: int, limit: int = CLAIM_MAX_WORDS):
+        self.word_count = word_count
+        self.limit = limit
+        super().__init__(
+            f"document is {word_count} words, over the {limit}-word claim-"
+            f"extraction limit; split or excerpt the document to study it"
+        )
 
 
 @dataclass(frozen=True)
@@ -406,6 +449,61 @@ def _stream_final_message(client, document_text: str):
         ],
     ) as stream:
         return stream.get_final_message()
+
+
+def _word_count(document_text: str) -> int:
+    """Count words as whitespace-separated tokens (``len(text.split())``).
+
+    A single, simple counting rule shared by the guard and its message so the
+    reported count, the logged count, and the bound check can never disagree.
+    """
+    return len(document_text.split())
+
+
+def _enforce_input_bound(document_text: str) -> None:
+    """Reject an over-length document BEFORE any extraction call is made.
+
+    The input tripwire (goal Part 2). Word count is ``len(text.split())``; a doc
+    whose count STRICTLY EXCEEDS :data:`CLAIM_MAX_WORDS` is refused (a doc exactly
+    at the bound is allowed). Every rejection emits an app-log line recording the
+    word count — durable evidence for tuning the constant later — and then raises
+    the typed, catchable :class:`ClaimInputTooLong`. Callers that want the
+    document to degrade honestly (best-effort warm) catch it; nothing here writes
+    a sidecar or touches storage, so an oversized doc's file is untouched.
+    """
+    words = _word_count(document_text)
+    if words > CLAIM_MAX_WORDS:
+        _log.warning(
+            "claim extraction refused: document is %d words, over the %d-word "
+            "limit (CLAIM_MAX_WORDS)",
+            words,
+            CLAIM_MAX_WORDS,
+        )
+        raise ClaimInputTooLong(words, CLAIM_MAX_WORDS)
+
+
+def rejection_reason(document_text: str) -> str | None:
+    """Advisory: the user-facing rejection message a warm WOULD raise, or None.
+
+    A read-only companion to :func:`_enforce_input_bound` for the transport layer
+    (the upload endpoint) so it can SURFACE the tripwire's message in the upload
+    response without re-implementing the bound. It reuses the SAME single source
+    of truth — :func:`_word_count`, :data:`CLAIM_MAX_WORDS`, and the
+    :class:`ClaimInputTooLong` message — so the surfaced text can never disagree
+    with what the warm seam actually enforces.
+
+    This is NOT a second enforcement site: it never blocks, schedules, or skips a
+    warm, writes no sidecar, and emits no log line (the durable rejection log is
+    the warm seam's job, fired once when extraction is actually attempted). It
+    only answers "if this text were warmed, what would the user be told?" —
+    returning the message for an over-bound doc, or ``None`` for a doc within the
+    bound (word count ``<= CLAIM_MAX_WORDS``). The upload always schedules the
+    warm regardless; this string is purely for display.
+    """
+    words = _word_count(document_text)
+    if words > CLAIM_MAX_WORDS:
+        return str(ClaimInputTooLong(words, CLAIM_MAX_WORDS))
+    return None
 
 
 def extract_claims(document_text: str) -> list[Claim]:
@@ -675,6 +773,13 @@ def generate_claims(user_id: str, doc_id: str, document_text: str) -> list[Claim
                 return _records_to_claims(data)  # cache hit — single read
         except (ValueError, OSError, ClaimParseError):
             pass  # corrupt / unreadable / malformed -> regenerate
+    # Input tripwire (goal Part 2). Positioned HERE — after the cache-hit /
+    # source_hash freshness check above, before the extraction call below — so
+    # this single shared warm seam protects every extraction entry point (the
+    # upload-triggered warm and the prepare/picker path both funnel through
+    # generate_claims). A fresh cached rubric short-circuits above and is served
+    # regardless of length; only a doc that WOULD hit the live model is bounded.
+    _enforce_input_bound(document_text)
     claims = extract_claims(document_text)
     write_claims(ns, doc_id, claims, source_hash=current_hash)
     return claims

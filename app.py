@@ -169,12 +169,43 @@ async def rtvi_proxy(
 
 
 @app.post("/api/documents")
-async def upload_document(file: UploadFile, user_id: str = Depends(require_user)):
+async def upload_document(
+    file: UploadFile,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(require_user),
+):
     try:
         raw = await file.read()
-        return documents.save_upload(user_id, file.filename or "untitled", raw)
+        result = documents.save_upload(user_id, file.filename or "untitled", raw)
     except documents.UploadError as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+    # Auto-warm (goal Part 1): a successful upload should leave the doc ready to
+    # study — claims extracted automatically — with no ritual picker-click first.
+    # Schedule the SAME background warm the prepare/picker path uses, scoped to
+    # the uploading user's namespace, so extraction funnels through the shared
+    # generate_claims cache guard AND the input tripwire (nothing here re-checks
+    # the bound or re-counts words). Upload success is INDEPENDENT of extraction:
+    # _warm_claims is best-effort (it swallows every exception), and scheduling a
+    # background task cannot fail the response already computed above — so an API
+    # error, or the tripwire rejecting an oversized doc, degrades the doc to plain
+    # unwarmed study exactly as an unwarmed doc does today, no new upload failure.
+    doc_id = result["document_id"]
+    _schedule_warm(background_tasks, user_id, doc_id)
+
+    # Surface (display-only) the tripwire's rejection reason for an oversized doc
+    # so the uploading user is told WHY it won't be steered — the file still
+    # landed and is loadable. This reuses claims' single source of truth for the
+    # message (claims.rejection_reason) rather than re-enforcing the bound here;
+    # the warm above is scheduled regardless, and the durable rejection log line
+    # is emitted by the warm seam when extraction is actually attempted. Additive
+    # optional field: null/absent for a doc within the bound.
+    loaded = documents.load_document(user_id, doc_id)
+    if loaded is not None:
+        reason = claims.rejection_reason(loaded[1])
+        if reason is not None:
+            result = {**result, "claim_extraction_rejected": reason}
+    return result
 
 
 @app.get("/api/documents")
@@ -215,6 +246,24 @@ async def _warm_claims(user_id: str, doc_id: str) -> None:
         _claims_warming.discard((user_id, doc_id))
 
 
+def _schedule_warm(background_tasks: BackgroundTasks, user_id: str, doc_id: str) -> bool:
+    """Schedule the shared background warm for ``user_id``'s ``doc_id``, de-duped.
+
+    The SINGLE scheduling seam shared by the prepare/picker path and the
+    upload-completion auto-warm, so both funnel through the identical
+    ``_claims_warming`` in-flight guard and the same ``_warm_claims`` task — and
+    thus through generate_claims' source_hash cache guard and the input tripwire.
+    Returns True if a task was scheduled, False if one was already in flight for
+    this (user_id, doc_id). Never performs extraction itself and never raises;
+    idempotency-by-freshness and the bound are enforced INSIDE ``_warm_claims``.
+    """
+    if (user_id, doc_id) in _claims_warming:
+        return False
+    _claims_warming.add((user_id, doc_id))
+    background_tasks.add_task(_warm_claims, user_id, doc_id)
+    return True
+
+
 @app.post("/api/documents/{doc_id}/claims/prepare", status_code=202)
 async def prepare_claims(
     doc_id: str, background_tasks: BackgroundTasks, user_id: str = Depends(require_user)
@@ -236,10 +285,8 @@ async def prepare_claims(
     _title, text = loaded
     if claims.load_fresh_claims(user_id, safe_id, text) is not None:
         return {"status": "cached"}
-    if (user_id, safe_id) in _claims_warming:
+    if not _schedule_warm(background_tasks, user_id, safe_id):
         return {"status": "in_flight"}
-    _claims_warming.add((user_id, safe_id))
-    background_tasks.add_task(_warm_claims, user_id, safe_id)
     return {"status": "warming"}
 
 
