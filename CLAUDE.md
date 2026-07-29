@@ -21,6 +21,8 @@ The first thing the script prints is the pipecat banner (from `import pipecat`),
 
 `./start.sh` runs uvicorn without `--reload`, so any change to a `.py` file — including module-level string constants like `VIEWER_HTML` in `app.py` — only takes effect after re-running `./start.sh` (which kills the bound port and re-imports). Static files in `static/` (study.html, JS, CSS) are served via `FileResponse` per request and pick up edits without a restart. Don't tell the user "no restart needed" without checking which side of that line the edit lives on.
 
+**Corollary — before trusting a behavior check against the running server, confirm it actually loaded the code you think it did.** Because there's no `--reload`, a merge/checkout does NOT restart uvicorn — the process keeps serving whatever was on disk when it started. Compare the server process start time (`ps -p <pid> -o lstart`) against the code's on-disk mtime / last merge; if the process predates the code, it's serving stale code and a live check validates the wrong thing. (Caught 2026-07-29: a first-run verification's step-1 gate found the server still on pre-security-fix code hours after the fixes merged.)
+
 ## `app.py` imports pipecat at module top — test via pure helpers, not `TestClient`
 
 `app.py` does `from pipecat...` and `import bot` at module scope (lines ~25–35), so `import app` pulls in the full pipecat/ML stack and fails in any lightweight / Pipecat-free environment. Don't write route tests that do `from app import app` + a FastAPI `TestClient` — they can't run without the whole stack (and are unwinnable as a dev-harness contract, same family as "import bot without its deps").
