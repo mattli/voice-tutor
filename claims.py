@@ -50,6 +50,14 @@ import anthropic
 # call time inside the persistence helpers so tests can redirect it.
 DOCUMENTS_DIR = Path.home() / ".voice-tutor" / "documents"
 
+# The shared-document namespace, mirroring documents.SHARED_USER_ID. Documents
+# placed under documents/_shared/ are offered to (and loadable by) every user;
+# their claim sidecar is extracted ONCE and served to everyone from _shared/.
+# Defined LOCALLY here (deliberately NOT imported from documents.py) so this
+# module's import closure stays anthropic + stdlib only — importing documents.py
+# would drag pypdf into the closure. See _resolve_doc_namespace for the fallback.
+SHARED_USER_ID = "_shared"
+
 MODEL = "claude-sonnet-5"
 # A dense document's claim set (40-50 claims, each with a verbatim anchor) runs
 # well past 8K output tokens; the old 8K cap truncated the tool call mid-JSON on
@@ -488,6 +496,33 @@ def _claims_path(user_id: str, doc_id: str) -> Path:
     return DOCUMENTS_DIR / Path(user_id).name / f"{doc_id}.claims.json"
 
 
+def _resolve_doc_namespace(user_id: str, doc_id: str) -> str:
+    """Return the namespace ``user_id`` whose sidecar governs ``doc_id``.
+
+    This is the ONLY place claims.py decides shared-vs-per-user placement, and it
+    mirrors ``documents.load_document``'s resolution: user namespace FIRST, then
+    the shared namespace (``documents/_shared/``) as a fallback. Crucially it
+    keys on the DOCUMENT (the ``<doc_id>.txt`` file), NOT on any sidecar — so a
+    shared doc whose sidecar has never been extracted still resolves to
+    ``_shared``, letting :func:`generate_claims` bootstrap the sidecar there.
+
+    Resolution rule (deterministic): the doc resolves to ``_shared`` IFF the
+    per-user ``DOCUMENTS_DIR/<user_id>/<doc_id>.txt`` is ABSENT and the shared
+    ``DOCUMENTS_DIR/_shared/<doc_id>.txt`` is PRESENT. Otherwise it resolves to
+    ``user_id`` — the user's own doc shadows a colliding shared one, and a doc
+    that exists in neither namespace falls through to per-user (mirror-image
+    isolation: no cross-user fallback). ``DOCUMENTS_DIR`` is read at call time so
+    a test monkeypatch redirects it; the ``.txt`` presence check is derived here
+    directly (documents.py is never imported).
+    """
+    user_txt = DOCUMENTS_DIR / Path(user_id).name / f"{doc_id}.txt"
+    if not user_txt.exists():
+        shared_txt = DOCUMENTS_DIR / SHARED_USER_ID / f"{doc_id}.txt"
+        if shared_txt.exists():
+            return SHARED_USER_ID
+    return user_id
+
+
 def _serialize(claims: list[Claim], source_hash: str | None = None) -> str:
     """Serialize ``claims`` to human-readable (indented, multi-line) JSON text.
 
@@ -589,11 +624,20 @@ def load_fresh_claims(user_id: str, doc_id: str, document_text: str) -> list[Cla
     document is selected. Returns None (never raises) on any read/parse failure.
     ``user_id`` is required and scopes the lookup — a user with no sidecar for
     ``doc_id`` gets None even if another user has a fresh one.
+
+    Shared-namespace fallback: the sidecar is looked up in the namespace the
+    DOCUMENT resolves to (:func:`_resolve_doc_namespace` — user-first, then
+    ``_shared/``), so a shared doc's single sidecar in ``_shared/`` serves every
+    user, while a per-user doc's sidecar stays strictly per-user. Freshness is
+    evaluated ONLY in that resolved namespace — there is no cross-namespace
+    fall-through: a stale per-user sidecar is a miss and never silently returns
+    fresh shared claims (and vice versa).
     """
-    if _cached_source_hash(user_id, doc_id) != _hash_source(document_text):
+    ns = _resolve_doc_namespace(user_id, doc_id)
+    if _cached_source_hash(ns, doc_id) != _hash_source(document_text):
         return None
     try:
-        return load_claims(user_id, doc_id)
+        return load_claims(ns, doc_id)
     except (ValueError, OSError, ClaimParseError):
         return None
 
@@ -609,9 +653,21 @@ def generate_claims(user_id: str, doc_id: str, document_text: str) -> list[Claim
     sidecar is rewritten. The return type is identical on both paths: ``list[Claim]``.
     ``user_id`` is required and scopes both the cache read and the write — two
     users studying the same ``doc_id`` never share a sidecar.
+
+    Shared-namespace placement: this function is the SOLE place that decides
+    whether a sidecar is shared or per-user. It resolves the DOCUMENT's namespace
+    once (:func:`_resolve_doc_namespace` — user-first, then ``_shared/``) and
+    both reads and writes the sidecar there. So a doc that resolves from
+    ``_shared/`` has its sidecar extracted ONCE into ``documents/_shared/`` and
+    served to every user (bootstrapping it even when no sidecar exists yet),
+    while a per-user doc's sidecar is written per-user exactly as before. The
+    low-level ``write_claims`` primitive still writes to the namespace it is
+    GIVEN — it makes no shared-vs-user decision of its own. ``source_hash``
+    freshness logic is unchanged, and evaluated only in the resolved namespace.
     """
     current_hash = _hash_source(document_text)
-    path = _claims_path(user_id, doc_id)
+    ns = _resolve_doc_namespace(user_id, doc_id)
+    path = _claims_path(ns, doc_id)
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -620,5 +676,5 @@ def generate_claims(user_id: str, doc_id: str, document_text: str) -> list[Claim
         except (ValueError, OSError, ClaimParseError):
             pass  # corrupt / unreadable / malformed -> regenerate
     claims = extract_claims(document_text)
-    write_claims(user_id, doc_id, claims, source_hash=current_hash)
+    write_claims(ns, doc_id, claims, source_hash=current_hash)
     return claims

@@ -803,3 +803,305 @@ def test_import_closure_only_anthropic_and_stdlib():
     assert forbidden.isdisjoint(imported_tops), (
         f"claims.py imports forbidden modules: {forbidden & imported_tops}"
     )
+
+
+# =========================================================================== #
+# Sprint (shared claims sidecars): a document under documents/_shared/ has its
+# claim sidecar extracted ONCE into _shared/ and served to every user, via a
+# resolution fallback (user namespace first, then _shared/) that mirrors
+# documents.load_document. No signature changes; the sidecar namespace is
+# derived INSIDE the helpers from the DOCUMENT (<doc_id>.txt) presence.
+# =========================================================================== #
+
+SHARED = "_shared"
+
+
+def _seed_doc_txt(docs_dir, namespace, doc_id, text):
+    """Seed a ``<doc_id>.txt`` DOCUMENT under ``docs_dir/namespace`` (per-user or
+    ``_shared``). The namespace-resolution keys on this file, not the sidecar."""
+    d = docs_dir / namespace
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{doc_id}.txt").write_text(text)
+
+
+def _sidecar_path(docs_dir, namespace, doc_id):
+    return docs_dir / namespace / f"{doc_id}.claims.json"
+
+
+def _all_sidecars(docs_dir):
+    return sorted(docs_dir.glob("**/*.claims.json"))
+
+
+def _claim_objs_for(doc_id, n=3):
+    """Real verbatim-anchored Claim list for ``doc_id`` (drives the extract mock)."""
+    return _claim_set_from_fixture(doc_id, n=n)
+
+
+# --------------------------------------------------------------------------- #
+# c1: EXACT signatures unchanged (no new parameters of any kind).
+# --------------------------------------------------------------------------- #
+
+
+def test_public_signatures_are_exactly_unchanged():
+    import inspect
+
+    gen = list(inspect.signature(claims.generate_claims).parameters)
+    fresh = list(inspect.signature(claims.load_fresh_claims).parameters)
+    assert gen == ["user_id", "doc_id", "document_text"]
+    assert fresh == ["user_id", "doc_id", "document_text"]
+
+
+def test_helpers_callable_positionally_three_args(claims_docs_dir):
+    doc_id = DOC_IDS[0]
+    text = _fixture_text(doc_id)
+    _seed_doc_txt(claims_docs_dir, USER_ID, doc_id, text)
+    with patch.object(claims, "extract_claims", return_value=_claim_objs_for(doc_id)):
+        result = claims.generate_claims(USER_ID, doc_id, text)  # positional
+    assert isinstance(result, list) and result
+    # load_fresh_claims also callable positionally.
+    assert claims.load_fresh_claims(USER_ID, doc_id, text) is not None
+
+
+# --------------------------------------------------------------------------- #
+# c2 / c3: placement keys on the DOCUMENT (.txt), bootstraps a _shared/ sidecar.
+# --------------------------------------------------------------------------- #
+
+
+def test_shared_doc_bootstraps_sidecar_into_shared_from_nothing(claims_docs_dir):
+    # Seed ONLY the shared .txt — no sidecar anywhere. generate_claims must
+    # create the sidecar in _shared/ (bootstrapped), none under the user dir.
+    doc_id = DOC_IDS[0]
+    text = _fixture_text(doc_id)
+    _seed_doc_txt(claims_docs_dir, SHARED, doc_id, text)
+    assert not _all_sidecars(claims_docs_dir), "precondition: no sidecar yet"
+
+    with patch.object(claims, "extract_claims", return_value=_claim_objs_for(doc_id)):
+        claims.generate_claims(USER_ID, doc_id, text)
+
+    assert _sidecar_path(claims_docs_dir, SHARED, doc_id).exists()
+    assert not _sidecar_path(claims_docs_dir, USER_ID, doc_id).exists()
+
+
+def test_per_user_doc_sidecar_lands_under_user_dir(claims_docs_dir):
+    # Seed ONLY the user .txt: sidecar must land under the user dir, not _shared.
+    doc_id = DOC_IDS[1]
+    text = _fixture_text(doc_id)
+    _seed_doc_txt(claims_docs_dir, USER_ID, doc_id, text)
+
+    with patch.object(claims, "extract_claims", return_value=_claim_objs_for(doc_id)):
+        claims.generate_claims(USER_ID, doc_id, text)
+
+    assert _sidecar_path(claims_docs_dir, USER_ID, doc_id).exists()
+    assert not _sidecar_path(claims_docs_dir, SHARED, doc_id).exists()
+
+
+def test_claims_py_does_not_import_documents():
+    # Static guard (mirrors the existing import-closure test): the shared
+    # namespace is derived by checking <doc_id>.txt presence, NOT via documents.py.
+    tree = ast.parse(CLAIMS_PY.read_text())
+    imported_tops = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported_tops.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            imported_tops.add(node.module.split(".")[0])
+    assert "documents" not in imported_tops
+
+
+# --------------------------------------------------------------------------- #
+# c4: generate-once, serve-everyone (>= three users, single extraction).
+# --------------------------------------------------------------------------- #
+
+
+def test_shared_sidecar_extracted_once_served_to_all_users(claims_docs_dir):
+    doc_id = DOC_IDS[2]
+    text = _fixture_text(doc_id)
+    _seed_doc_txt(claims_docs_dir, SHARED, doc_id, text)
+
+    extract = MagicMock(return_value=_claim_objs_for(doc_id))
+    with patch.object(claims, "extract_claims", extract):
+        claims.generate_claims("matt", doc_id, text)  # A generates once
+        a = claims.load_fresh_claims("matt", doc_id, text)
+        b = claims.load_fresh_claims("sarah", doc_id, text)  # no prior state
+        c = claims.load_fresh_claims("wei", doc_id, text)    # no prior state
+
+    # Extraction happened exactly once across all four calls.
+    assert extract.call_count == 1
+    # The single shared sidecar is what every user resolves to.
+    shared = claims.load_claims(SHARED, doc_id)
+    expected = [x.to_dict() for x in shared]
+    # All three users see the identical shared claim set.
+    for got in (a, b, c):
+        assert got is not None
+        assert [x.to_dict() for x in got] == expected
+    # Exactly one sidecar exists, and it lives in _shared/.
+    sidecars = _all_sidecars(claims_docs_dir)
+    assert len(sidecars) == 1
+    assert sidecars[0] == _sidecar_path(claims_docs_dir, SHARED, doc_id)
+
+
+# --------------------------------------------------------------------------- #
+# c5: shadowing — a user's own colliding doc wins over the shared one.
+# --------------------------------------------------------------------------- #
+
+
+def test_user_doc_shadows_colliding_shared_doc(claims_docs_dir):
+    doc_id = DOC_IDS[0]
+    user_text = _fixture_text(DOC_IDS[0])
+    shared_text = _fixture_text(DOC_IDS[1])  # distinguishable content
+    # Both namespaces hold the SAME doc_id but different documents + sidecars.
+    _seed_doc_txt(claims_docs_dir, USER_ID, doc_id, user_text)
+    _seed_doc_txt(claims_docs_dir, SHARED, doc_id, shared_text)
+
+    user_claims = [claims.Claim("c1", "USER claim", _real_anchors(user_text, 1)[0])]
+    shared_claims = [claims.Claim("c1", "SHARED claim", _real_anchors(shared_text, 1)[0])]
+    claims.write_claims(USER_ID, doc_id, user_claims, source_hash=claims._hash_source(user_text))
+    claims.write_claims(SHARED, doc_id, shared_claims, source_hash=claims._hash_source(shared_text))
+
+    got = claims.load_fresh_claims(USER_ID, doc_id, user_text)
+    assert got is not None
+    assert [c.claim for c in got] == ["USER claim"], "user doc must shadow shared"
+
+
+# --------------------------------------------------------------------------- #
+# c6: per-user isolation — no cross-user fallback for a purely per-user doc.
+# --------------------------------------------------------------------------- #
+
+
+def test_per_user_sidecar_never_leaks_to_another_user(claims_docs_dir):
+    doc_id = DOC_IDS[1]
+    text = _fixture_text(doc_id)
+    _seed_doc_txt(claims_docs_dir, "alice", doc_id, text)  # only alice owns it
+
+    with patch.object(claims, "extract_claims", return_value=_claim_objs_for(doc_id)):
+        claims.generate_claims("alice", doc_id, text)
+
+    # Bob has neither a user doc nor a shared doc for doc_id -> miss, never alice's.
+    assert claims.load_fresh_claims("bob", doc_id, text) is None
+    assert not _sidecar_path(claims_docs_dir, "bob", doc_id).exists()
+    assert not _sidecar_path(claims_docs_dir, SHARED, doc_id).exists()
+
+
+# --------------------------------------------------------------------------- #
+# c7: source_hash freshness unchanged; evaluated ONLY in the resolved namespace
+# (no cross-namespace fall-through).
+# --------------------------------------------------------------------------- #
+
+
+def test_shared_fresh_hash_served_without_rewrite(claims_docs_dir):
+    doc_id = DOC_IDS[2]
+    text = _fixture_text(doc_id)
+    _seed_doc_txt(claims_docs_dir, SHARED, doc_id, text)
+    with patch.object(claims, "extract_claims", return_value=_claim_objs_for(doc_id)):
+        claims.generate_claims("matt", doc_id, text)
+    sidecar = _sidecar_path(claims_docs_dir, SHARED, doc_id)
+    before = sidecar.read_bytes()
+
+    # Matching text -> cached shared claims returned without rewriting the sidecar.
+    got = claims.load_fresh_claims("sarah", doc_id, text)
+    assert got is not None
+    assert sidecar.read_bytes() == before, "fresh read must not rewrite the sidecar"
+
+
+def test_shared_stale_hash_is_a_miss(claims_docs_dir):
+    doc_id = DOC_IDS[0]
+    text = _fixture_text(doc_id)
+    _seed_doc_txt(claims_docs_dir, SHARED, doc_id, text)
+    with patch.object(claims, "extract_claims", return_value=_claim_objs_for(doc_id)):
+        claims.generate_claims("matt", doc_id, text)
+
+    # The shared document text drifted -> stale sidecar -> miss (no stale claims).
+    changed = text + "\n\n## Upstream edit\n\nA new fact.\n"
+    assert claims._hash_source(changed) != claims._hash_source(text)
+    assert claims.load_fresh_claims("sarah", doc_id, changed) is None
+
+
+def test_no_cross_namespace_fallthrough_stale_user_over_fresh_shared(claims_docs_dir):
+    # The document resolves PER-USER (user .txt present), so the _shared/ sidecar
+    # must never be consulted: a stale per-user sidecar is a miss and does NOT
+    # silently return the fresh shared claims of the same doc_id.
+    doc_id = DOC_IDS[1]
+    user_text = _fixture_text(DOC_IDS[1])
+    shared_text = _fixture_text(DOC_IDS[2])
+    _seed_doc_txt(claims_docs_dir, USER_ID, doc_id, user_text)
+    _seed_doc_txt(claims_docs_dir, SHARED, doc_id, shared_text)
+
+    # STALE per-user sidecar (hash of some OTHER text), FRESH shared sidecar.
+    stale = [claims.Claim("c1", "stale user", _real_anchors(user_text, 1)[0])]
+    claims.write_claims(USER_ID, doc_id, stale, source_hash="deadbeef")
+    fresh_shared = [claims.Claim("c1", "fresh shared", _real_anchors(shared_text, 1)[0])]
+    claims.write_claims(SHARED, doc_id, fresh_shared, source_hash=claims._hash_source(user_text))
+
+    # Doc resolves per-user; stale per-user sidecar -> miss; no shared fall-through.
+    assert claims.load_fresh_claims(USER_ID, doc_id, user_text) is None
+
+
+# --------------------------------------------------------------------------- #
+# c8: placement centralized in generate_claims; primitives stay intact.
+# --------------------------------------------------------------------------- #
+
+
+def test_write_claims_primitive_writes_to_given_namespace(claims_docs_dir):
+    # write_claims makes NO shared-vs-user decision: it writes to the namespace
+    # it is GIVEN. Passing _shared writes to _shared; passing a user writes there.
+    doc_id = DOC_IDS[0]
+    claim_set = _claim_set_from_fixture(doc_id, n=2)
+    claims.write_claims(SHARED, doc_id, claim_set)
+    assert _sidecar_path(claims_docs_dir, SHARED, doc_id).exists()
+    claims.write_claims("carol", doc_id, claim_set)
+    assert _sidecar_path(claims_docs_dir, "carol", doc_id).exists()
+
+
+def test_namespace_resolution_only_invoked_from_generate_claims():
+    # Static AST guard: the placement helper _resolve_doc_namespace is called
+    # only from generate_claims and load_fresh_claims (the read path) — NEVER
+    # from write_claims (the low-level primitive stays namespace-agnostic).
+    tree = ast.parse(CLAIMS_PY.read_text())
+    funcs = {
+        n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)
+    }
+    assert "_resolve_doc_namespace" in funcs, "placement helper missing"
+    assert "generate_claims" in funcs and "write_claims" in funcs
+
+    def _calls(fn_node, name):
+        return any(
+            isinstance(c, ast.Call)
+            and isinstance(c.func, ast.Name)
+            and c.func.id == name
+            for c in ast.walk(fn_node)
+        )
+
+    # generate_claims performs the resolution.
+    assert _calls(funcs["generate_claims"], "_resolve_doc_namespace")
+    # write_claims must NOT resolve the namespace — it writes what it's given.
+    assert not _calls(funcs["write_claims"], "_resolve_doc_namespace")
+
+    # generate_claims is the SOLE function that both resolves the namespace AND
+    # writes a sidecar (calls write_claims).
+    resolvers_that_write = [
+        name
+        for name, node in funcs.items()
+        if _calls(node, "_resolve_doc_namespace") and _calls(node, "write_claims")
+    ]
+    assert resolvers_that_write == ["generate_claims"], resolvers_that_write
+
+
+# --------------------------------------------------------------------------- #
+# c9: read-only shared happy path — no extraction on a pre-seeded fresh sidecar.
+# --------------------------------------------------------------------------- #
+
+
+def test_read_only_shared_happy_path_no_extraction(claims_docs_dir):
+    doc_id = DOC_IDS[2]
+    text = _fixture_text(doc_id)
+    _seed_doc_txt(claims_docs_dir, SHARED, doc_id, text)
+    # Pre-seed a fresh shared sidecar (matching source_hash), no per-user state.
+    shared_claims = _claim_set_from_fixture(doc_id, n=2)
+    claims.write_claims(SHARED, doc_id, shared_claims, source_hash=claims._hash_source(text))
+
+    extract = MagicMock()
+    with patch.object(claims, "extract_claims", extract):
+        got = claims.load_fresh_claims("newuser", doc_id, text)
+    assert got is not None
+    assert extract.called is False, "load_fresh_claims must never extract"

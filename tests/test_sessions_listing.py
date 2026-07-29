@@ -376,6 +376,43 @@ def test_session_belongs_to(cost_log_tmp):
     assert sessions.session_belongs_to("matt", "missing") is False
 
 
+# --------------------------------------------------------------------------- #
+# Sprint 2 — per-user session listing on a SHARED document id                  #
+#                                                                              #
+# A shared demo doc has one id but per-user state. list_study_sessions must    #
+# stay keyed on user_id: two users A and B who both studied the SAME shared    #
+# doc id must each see only their own session record, never the other's.       #
+# --------------------------------------------------------------------------- #
+
+_SHARED_DOC = "shared-demo-doc"
+
+
+def test_list_study_sessions_shared_doc_is_per_user(cost_log_tmp, docs_dir):
+    # Both users study the SAME shared doc id (the collision the shared
+    # namespace makes possible). Seed a per-user doc so a title resolves for
+    # each — documents remain per-user regardless of the shared session key.
+    _seed_doc(docs_dir, _SHARED_DOC, "Shared Demo", user_id="matt")
+    _seed_doc(docs_dir, _SHARED_DOC, "Shared Demo", user_id="sarah")
+    _seed_session(cost_log_tmp, session_id="sa", document_id=_SHARED_DOC, user_id="matt")
+    _seed_session(cost_log_tmp, session_id="sb", document_id=_SHARED_DOC, user_id="sarah")
+
+    matt = sessions.list_study_sessions("matt")
+    sarah = sessions.list_study_sessions("sarah")
+
+    matt_ids = [r["session_id"] for r in matt]
+    sarah_ids = [r["session_id"] for r in sarah]
+
+    # matt sees only his session on the shared doc; sarah's is excluded.
+    assert matt_ids == ["sa"]
+    assert "sb" not in matt_ids
+    # Mirror image: sarah sees only hers; matt's is excluded.
+    assert sarah_ids == ["sb"]
+    assert "sa" not in sarah_ids
+
+    # A user with no sessions on the shared doc sees nothing at all.
+    assert sessions.list_study_sessions("dev") == []
+
+
 def test_can_view_machine_artifacts_matt_only():
     # Mirror image: a non-matt user is denied prompt/analysis/cost-log surfaces.
     assert sessions.can_view_machine_artifacts("matt") is True
