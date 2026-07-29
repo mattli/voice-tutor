@@ -200,11 +200,18 @@ async def upload_document(
     # the warm above is scheduled regardless, and the durable rejection log line
     # is emitted by the warm seam when extraction is actually attempted. Additive
     # optional field: null/absent for a doc within the bound.
-    loaded = documents.load_document(user_id, doc_id)
-    if loaded is not None:
-        reason = claims.rejection_reason(loaded[1])
-        if reason is not None:
-            result = {**result, "claim_extraction_rejected": reason}
+    # The upload already succeeded and the file already landed (save_upload above);
+    # this annotation is DISPLAY-ONLY. Guard the re-read + reason computation so a
+    # transient disk-read hiccup (or any failure here) degrades to "no annotation"
+    # rather than turning a good upload into an error response.
+    try:
+        loaded = documents.load_document(user_id, doc_id)
+        if loaded is not None:
+            reason = claims.rejection_reason(loaded[1])
+            if reason is not None:
+                result = {**result, "claim_extraction_rejected": reason}
+    except Exception as e:  # best-effort annotation; never fails the upload
+        print(f"[upload] rejection-reason annotation skipped for {doc_id}: {e!r}", flush=True)
     return result
 
 

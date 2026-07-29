@@ -209,7 +209,17 @@ async def list_documents(user_id: str) -> list[dict]:
 
 
 def _load_from_dir(d: Path, doc_id: str) -> tuple[str, str] | None:
-    """Load (title, text) for ``doc_id`` from directory ``d``, or None on miss."""
+    """Load (title, text) for ``doc_id`` from directory ``d``, or None on miss.
+
+    ``doc_id`` is sanitized to a single path component (``Path(doc_id).name``) at
+    this helper boundary — the shared choke point every read path funnels through
+    (``load_document`` -> here, reached from bot.py/app.py/sessions.py). A crafted
+    id like ``../<other_user>/<uuid>`` or an absolute path would otherwise string-
+    join its way OUT of ``d`` and read another user's document; collapsing it to
+    the final component keeps the lookup inside ``d`` (a miss, hence None, unless
+    the caller genuinely owns that name). Mirrors ``user_dir``'s ``Path.name``
+    guard on the user_id half and ``app.py``'s ``safe_id = Path(doc_id).name``."""
+    doc_id = Path(doc_id).name
     txt_path = d / f"{doc_id}.txt"
     if not txt_path.exists():
         return None

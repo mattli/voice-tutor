@@ -587,11 +587,15 @@ def _claims_path(user_id: str, doc_id: str) -> Path:
     """Sidecar path for ``user_id``'s ``doc_id`` claim set, beside the document.
 
     Resolves ``DOCUMENTS_DIR`` at call time (module attribute lookup) so a test
-    that monkeypatches ``claims.DOCUMENTS_DIR`` redirects the write. ``user_id``
-    is sanitized via ``Path(user_id).name`` (mirrors documents.py's per-user
-    namespacing) so it can never escape ``DOCUMENTS_DIR`` via path segments.
+    that monkeypatches ``claims.DOCUMENTS_DIR`` redirects the write. BOTH the
+    ``user_id`` AND the ``doc_id`` are sanitized to a single path component via
+    ``Path(...).name`` (mirrors documents.py's per-user namespacing) so neither
+    half can escape ``DOCUMENTS_DIR`` via path segments — a crafted ``doc_id``
+    like ``../<other_user>/<uuid>`` would otherwise read/write another user's
+    sidecar. This is the shared boundary every sidecar read/write funnels through
+    (load_claims / write_claims / _cached_source_hash / generate_claims).
     """
-    return DOCUMENTS_DIR / Path(user_id).name / f"{doc_id}.claims.json"
+    return DOCUMENTS_DIR / Path(user_id).name / f"{Path(doc_id).name}.claims.json"
 
 
 def _resolve_doc_namespace(user_id: str, doc_id: str) -> str:
@@ -612,7 +616,16 @@ def _resolve_doc_namespace(user_id: str, doc_id: str) -> str:
     isolation: no cross-user fallback). ``DOCUMENTS_DIR`` is read at call time so
     a test monkeypatch redirects it; the ``.txt`` presence check is derived here
     directly (documents.py is never imported).
+
+    ``doc_id`` is sanitized to a single path component (``Path(doc_id).name``)
+    before the presence probes: without it, a crafted id (e.g. ``../<user>/<uuid>``
+    from a brand-new caller whose own dir doesn't exist yet) can make the shared
+    ``.txt`` probe traverse to an existing file and resolve to ``_shared`` — which
+    would route :func:`generate_claims`'s WRITE into the shared namespace (sidecar
+    poisoning). Collapsing to the final component keeps resolution honest and
+    matches the sanitize in :func:`_claims_path`.
     """
+    doc_id = Path(doc_id).name
     user_txt = DOCUMENTS_DIR / Path(user_id).name / f"{doc_id}.txt"
     if not user_txt.exists():
         shared_txt = DOCUMENTS_DIR / SHARED_USER_ID / f"{doc_id}.txt"
