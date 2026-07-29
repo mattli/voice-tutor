@@ -53,3 +53,28 @@ A green suite only proves the **writer**. When you change how files are named, t
 **Worked example:** the session-analysis rename to date-first names (`session-analysis-<YYYY-MM-DD-HHMMSS>-<shortid>.md`) updated the writer (`bot.py` via `session_naming.session_analysis_filename`) and had a passing builder test — but `app.py` still looked files up by the **old exact name** `session-analysis-<full-uuid>.md` in two places (`/view/sessions/{id}/analysis` and the `/telemetry` composite). Result: every UUID session's analysis silently 404'd, the "Session analysis" diagnostic vanished from `static/study.html` (it's gated on `data.analysis`), and long sessions polled to their cap because the poll `done`-condition requires `data.analysis`. The suite stayed green the whole time. Fixed by a pure reader `session_naming.find_analysis_path()` (globs on the shortid the writer embeds; `SHORTID_LEN` shared so the two can't drift) routed through both call sites.
 
 **Rule:** before shipping a naming/scheme change, `grep -rn` for **consumers** of the pattern (both `-` and `_` spellings, string literals, and path-building `f"..."`), and pin the **round-trip** — write under the builder's name, assert the finder locates it — not just the builder in isolation. Writer + reader agreeing is the property.
+
+## Client-controllable ids that become file paths — sanitize at a shared choke point (2026-07-29)
+
+Any id that arrives from the client (WebRTC offer body, request path, or a value
+read back from a stored log that was itself written from a client value) and is then
+used as a **filesystem path component** must be collapsed to a single component with
+`Path(x).name` before the path is built — a crafted `../<other-user>/<id>` (or an
+absolute path) otherwise escapes the caller's `<user_id>/` namespace and reads or
+writes another user's data.
+
+Put the guard at the **shared helper/boundary every path funnels through**, not at
+each call site — containment must not depend on every caller remembering:
+- `doc_id` → `documents._load_from_dir`, `claims._claims_path`, `claims._resolve_doc_namespace` (a crafted id in the last one also mis-routed `generate_claims`' WRITE into `_shared/`).
+- `session_id` → `session_naming.safe_session_id`, applied at the SINGLE `study_meta["session_id"]` construction in `bot.py` (every downstream writer inherits it) and at the `study_history` persisted-log read (a second trust boundary — pre-guard rows).
+- `app.py` routes already do `safe_id = Path(id).name` — mirror that everywhere else.
+
+Two traps this class hides behind: (1) `bot.py`'s `bot()` coroutine is deliberately
+untested at the transport layer (see "test via pure helpers, not `TestClient`"), so a
+green suite never catches an unguarded writer there — pin the property at the pure
+helper it uses. (2) The guard itself must be safe when joined **bare**:
+`Path("..").name == ".."`, so a helper that returns it is safe only by the convention
+that callers append a suffix — instead return a placeholder for `""`/`"."`/`".."` (see
+`session_naming.safe_session_id`). Regression tests: `tests/test_cross_user_doc_traversal.py`,
+`tests/test_session_id_traversal.py` (and note pathlib+os.stat only traverses `..` when the
+caller's OWN dir exists — a traversal test must materialize it or it passes vacuously).
