@@ -1105,3 +1105,187 @@ def test_read_only_shared_happy_path_no_extraction(claims_docs_dir):
         got = claims.load_fresh_claims("newuser", doc_id, text)
     assert got is not None
     assert extract.called is False, "load_fresh_claims must never extract"
+
+
+# =========================================================================== #
+# Sprint 0: input-bound tripwire at the shared warm seam (generate_claims).
+#
+# CLAIM_MAX_WORDS + ClaimInputTooLong: a doc whose word count STRICTLY EXCEEDS
+# the bound is refused BEFORE any extraction call, at the single shared seam so
+# every entry point (upload-triggered warm, prepare/picker) is protected. The
+# guard sits AFTER the cache-hit check (a fresh sidecar short-circuits, length
+# irrelevant) and BEFORE extract_claims. Word count is len(text.split()); every
+# rejection emits an app-log line with the count. extract_claims is monkeypatched
+# throughout — no live API call is ever made.
+# =========================================================================== #
+
+# Word count is len(text.split()); one-char tokens joined by single spaces give
+# an EXACT, len(text.split())-faithful count for boundary fixtures.
+def _text_of_words(n: int) -> str:
+    return " ".join(["w"] * n)
+
+
+def test_claim_max_words_constant_is_ten_thousand():
+    # c1: a single named module-level constant with the value 10_000.
+    assert claims.CLAIM_MAX_WORDS == 10_000
+    assert isinstance(claims.CLAIM_MAX_WORDS, int)
+
+
+def test_claim_input_too_long_is_independently_catchable():
+    # c2: typed, catchable, distinct from ClaimParseError / ClaimExtractionTruncated.
+    assert issubclass(claims.ClaimInputTooLong, Exception)
+    assert not issubclass(claims.ClaimInputTooLong, claims.ClaimExtractionTruncated)
+    assert not issubclass(claims.ClaimInputTooLong, claims.ClaimParseError)
+    # Catchable by its own type without swallowing parse/truncation errors.
+    with pytest.raises(claims.ClaimInputTooLong):
+        raise claims.ClaimInputTooLong(12_345)
+
+
+def test_over_bound_doc_raises_typed_condition_before_extraction(claims_docs_dir):
+    # c3 + c4: over-bound doc with NO fresh sidecar -> typed rejection, and
+    # extract_claims is NEVER invoked (rejection precedes extraction at the seam).
+    doc_id = DOC_IDS[0]
+    text = _text_of_words(claims.CLAIM_MAX_WORDS + 500)
+    _seed_doc_txt(claims_docs_dir, USER_ID, doc_id, text)
+
+    extract = MagicMock()
+    with patch.object(claims, "extract_claims", extract):
+        with pytest.raises(claims.ClaimInputTooLong):
+            claims.generate_claims(USER_ID, doc_id, text)
+    assert extract.called is False, "extraction fired despite the input bound"
+
+
+def test_fresh_cached_over_bound_doc_short_circuits_no_rejection(claims_docs_dir):
+    # c5: a fresh valid sidecar (matching source_hash) for an OVER-bound doc is
+    # served from cache without raising the bound and without extracting.
+    doc_id = DOC_IDS[1]
+    text = _text_of_words(claims.CLAIM_MAX_WORDS + 42)
+    _seed_doc_txt(claims_docs_dir, USER_ID, doc_id, text)
+    # Null-offset claims deserialize as anchor_unresolved (see _records_to_claims),
+    # so build the expectation the same way to compare the round-tripped record.
+    cached = [
+        claims.Claim(
+            id="c1", claim="cached claim", anchor="w w w", anchor_unresolved=True
+        )
+    ]
+    claims.write_claims(USER_ID, doc_id, cached, source_hash=claims._hash_source(text))
+
+    extract = MagicMock()
+    with patch.object(claims, "extract_claims", extract):
+        got = claims.generate_claims(USER_ID, doc_id, text)
+    assert extract.called is False, "cache hit must not extract"
+    assert [c.to_dict() for c in got] == [c.to_dict() for c in cached]
+
+
+def test_boundary_exactly_at_bound_proceeds_to_extraction(claims_docs_dir):
+    # c6: word_count == CLAIM_MAX_WORDS is ALLOWED (limit value itself passes).
+    doc_id = DOC_IDS[2]
+    text = _text_of_words(claims.CLAIM_MAX_WORDS)
+    assert len(text.split()) == claims.CLAIM_MAX_WORDS
+    _seed_doc_txt(claims_docs_dir, USER_ID, doc_id, text)
+
+    extract = MagicMock(return_value=[claims.Claim(id="c1", claim="c", anchor="w")])
+    with patch.object(claims, "extract_claims", extract):
+        got = claims.generate_claims(USER_ID, doc_id, text)
+    assert extract.called is True, "doc exactly at the bound must proceed to extract"
+    assert got == extract.return_value
+
+
+def test_boundary_one_over_bound_is_rejected(claims_docs_dir):
+    # c6: word_count == CLAIM_MAX_WORDS + 1 is REJECTED (strictly-greater rule).
+    doc_id = DOC_IDS[0]
+    text = _text_of_words(claims.CLAIM_MAX_WORDS + 1)
+    assert len(text.split()) == claims.CLAIM_MAX_WORDS + 1
+    _seed_doc_txt(claims_docs_dir, USER_ID, doc_id, text)
+
+    extract = MagicMock()
+    with patch.object(claims, "extract_claims", extract):
+        with pytest.raises(claims.ClaimInputTooLong):
+            claims.generate_claims(USER_ID, doc_id, text)
+    assert extract.called is False
+
+
+def test_rejection_message_names_count_limit_and_remedy(claims_docs_dir):
+    # c7: message names the ACTUAL word count (distinct from the limit), the
+    # limit, and split/excerpt guidance.
+    doc_id = DOC_IDS[1]
+    over = claims.CLAIM_MAX_WORDS + 1  # 10001, distinct from the limit 10000
+    text = _text_of_words(over)
+    _seed_doc_txt(claims_docs_dir, USER_ID, doc_id, text)
+
+    with patch.object(claims, "extract_claims", MagicMock()):
+        with pytest.raises(claims.ClaimInputTooLong) as exc_info:
+            claims.generate_claims(USER_ID, doc_id, text)
+    msg = str(exc_info.value)
+    assert str(over) in msg, f"actual word count {over} missing from: {msg!r}"
+    assert str(claims.CLAIM_MAX_WORDS) in msg, f"limit missing from: {msg!r}"
+    assert "split" in msg.lower() or "excerpt" in msg.lower(), (
+        f"remedy guidance missing from: {msg!r}"
+    )
+    # The typed condition also exposes the count programmatically.
+    assert exc_info.value.word_count == over
+
+
+def test_rejection_emits_app_log_line_with_word_count(claims_docs_dir, caplog):
+    # c8: a log record is emitted by the claims module logger on rejection, at
+    # INFO/WARNING level, carrying the EXACT actual word count as an integer.
+    import logging
+
+    doc_id = DOC_IDS[2]
+    over = claims.CLAIM_MAX_WORDS + 137
+    text = _text_of_words(over)
+    assert len(text.split()) == over
+    _seed_doc_txt(claims_docs_dir, USER_ID, doc_id, text)
+
+    with caplog.at_level(logging.INFO, logger="claims"):
+        with patch.object(claims, "extract_claims", MagicMock()):
+            with pytest.raises(claims.ClaimInputTooLong):
+                claims.generate_claims(USER_ID, doc_id, text)
+
+    claim_records = [r for r in caplog.records if r.name == "claims"]
+    assert claim_records, "no log record emitted by the claims module logger"
+    rec = claim_records[-1]
+    assert rec.levelno >= logging.INFO
+    assert str(over) in rec.getMessage(), (
+        f"rejection log line missing the word count {over}: {rec.getMessage()!r}"
+    )
+
+
+def test_under_bound_doc_proceeds_to_extraction_normally(claims_docs_dir):
+    # c9: under-bound doc, no fresh sidecar -> extraction IS invoked, no rejection.
+    doc_id = DOC_IDS[0]
+    text = _text_of_words(500)  # well under CLAIM_MAX_WORDS
+    _seed_doc_txt(claims_docs_dir, USER_ID, doc_id, text)
+
+    extract = MagicMock(return_value=[claims.Claim(id="c1", claim="c", anchor="w")])
+    with patch.object(claims, "extract_claims", extract):
+        got = claims.generate_claims(USER_ID, doc_id, text)
+    assert extract.called is True, "under-bound doc must proceed to extraction"
+    assert got == extract.return_value
+
+
+def test_bound_fires_through_prepare_picker_warm_path(claims_docs_dir, docs_dir):
+    # c10: drive an over-bound doc through the REAL prepare/picker warm path
+    # (app._warm_claims -> claims.generate_claims). The best-effort warm catches
+    # Exception and swallows the rejection, so no error surfaces to the caller;
+    # extract_claims is NEVER invoked. (The rejection log line is asserted
+    # separately, at the claims.py seam, in the caplog test above.)
+    import asyncio
+
+    app = pytest.importorskip("app")
+
+    doc_id = DOC_IDS[1]
+    over = claims.CLAIM_MAX_WORDS + 1000
+    text = _text_of_words(over)
+    # Seed the DOCUMENT in BOTH namespaces app._warm_claims reads: documents.py
+    # resolves the .txt (docs_dir fixture) and claims.py resolves its own dir
+    # (claims_docs_dir fixture).
+    (docs_dir / USER_ID).mkdir(parents=True, exist_ok=True)
+    (docs_dir / USER_ID / f"{doc_id}.txt").write_text(text)
+    _seed_doc_txt(claims_docs_dir, USER_ID, doc_id, text)
+
+    extract = MagicMock()
+    with patch.object(claims, "extract_claims", extract):
+        # Fire-and-forget best-effort warm: must NOT raise/500 to the caller.
+        asyncio.run(app._warm_claims(USER_ID, doc_id))
+    assert extract.called is False, "prepare path bypassed the input bound"
