@@ -206,7 +206,7 @@ from session_state import (
     load_most_recent_transcript_block,
     load_profile,
 )
-from session_naming import session_analysis_filename
+from session_naming import safe_session_id, session_analysis_filename
 ARTIFACTS_DIR = VOICE_TUTOR_DIR / "artifacts"
 # Accumulating memory: one dated section per session, append-only.
 # Future: when this file exceeds ~2K tokens, compact older entries by summarizing
@@ -716,7 +716,12 @@ async def bot(runner_args):
                 "document_id": document_id,
                 "doc_title": doc_title,
                 "doc_text": doc_text,
-                "session_id": session_id_override or document_id,
+                # Sanitize the client-controlled session id to a single path
+                # component HERE — the one point it enters study_meta — so every
+                # downstream writer that uses it as a filename stem (the .prompt.txt
+                # / .json / .summary.md / .usage.json / recap-artifact paths below)
+                # inherits containment and can't be steered into another user's dir.
+                "session_id": safe_session_id(session_id_override or document_id),
             }
 
     stt = DeepgramSTTService(

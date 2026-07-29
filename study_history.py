@@ -9,6 +9,8 @@ sessions.SESSION_LOG_JSONL_PATH.
 import json
 from pathlib import Path
 
+from session_naming import safe_session_id
+
 SESSION_LOG_JSONL_PATH = (
     Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "session-log.jsonl"
 )
@@ -84,7 +86,11 @@ def previous_session_recap(user_id, document_id, exclude_session_id):
 
     if best_sid is None:
         return None
-    artifact = ARTIFACTS_DIR / user_id / f"{best_sid}.md"
+    # best_sid comes from a persisted session-log row whose session_id was
+    # client-controlled when written. Sanitize to a single path component before
+    # building the artifact path so a crafted stored id (e.g. from a row written
+    # before the bot-side guard existed) can't read another user's recap artifact.
+    artifact = ARTIFACTS_DIR / Path(user_id).name / f"{safe_session_id(best_sid)}.md"
     if not artifact.exists():
         return None  # newest-only: do not walk back to an older recap
     try:

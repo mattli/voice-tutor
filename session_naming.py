@@ -13,12 +13,54 @@ per-user ``<user_id>/`` subdirectory (``bot.py`` writes there, ``app.py`` passes
 ``directory/<user_id>/``) is the property the tests pin.
 """
 
+import uuid
 from datetime import datetime
 from pathlib import Path
 
 # Length of the session-id prefix embedded in the filename. Shared by the writer
 # and the reader so a change here can't silently desync them.
 SHORTID_LEN = 8
+
+# Sanitized results that are UNSAFE as a bare path component: joined onto a
+# directory they select the directory itself ("") , the directory (".") , or its
+# PARENT ("..") — i.e. they still escape/alias rather than naming a file. When
+# ``Path(id).name`` lands on one of these the helper substitutes a placeholder.
+_UNSAFE_COMPONENTS = frozenset({"", ".", ".."})
+
+
+def safe_session_id(session_id):
+    """Collapse a ``session_id`` to a single, safe path component so it can't traverse.
+
+    The shared containment choke point for the session-id half of every on-disk
+    path, mirroring the doc_id ``Path(...).name`` guard. The ``session_id`` is
+    client-controllable (it arrives on the WebRTC offer body as ``session_id`` and
+    is stamped into ``study_meta["session_id"]``), and it becomes the filename stem
+    of the per-session transcript / prompt / usage / recap artifacts the bot writes
+    under ``<user_id>/``. Without this collapse, a crafted id like
+    ``../<other_user>/x`` string-joins OUT of the caller's own directory and writes
+    into (or, via a persisted row, reads from) another user's namespace.
+
+    Applied at the SINGLE point the client value enters ``study_meta`` (so every
+    writer inherits it) and at the persisted-log read in ``study_history`` (a
+    separate trust boundary — rows written before this guard existed). A legitimate
+    id (a UUID, or a ``%Y-%m-%d-%H%M%S`` timestamp stem) contains no separators, so
+    this is a no-op for it.
+
+    Guaranteed safe even when the result is joined onto a directory WITHOUT a
+    suffix: if ``Path(id).name`` collapses to a directory selector (``""`` from an
+    empty id or ``"."``, or ``".."`` from ``"foo/.."``), a fresh filename-safe
+    placeholder id (a hex UUID) is returned instead of the dangerous residue — so
+    the function's safety is a property of the function, not a convention every
+    call site must uphold by appending ``.txt``/``.md``/etc. ``None`` (the explicit
+    "no id" signal) is passed through unchanged; callers that reach the write/read
+    paths never pass ``None``.
+    """
+    if session_id is None:
+        return None
+    name = Path(str(session_id)).name
+    if name in _UNSAFE_COMPONENTS:
+        return uuid.uuid4().hex  # unusable id -> safe, unique, alphanumeric stem
+    return name
 
 
 def session_analysis_filename(session_start: datetime, session_id: str | None) -> str:
