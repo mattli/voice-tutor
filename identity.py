@@ -16,11 +16,24 @@ COOKIE_MAX_AGE = 31_536_000     # 1 year
 
 _USER_ID_RE = re.compile(r"^[a-z0-9_-]+$")
 
+# Reserved directory names under documents/ that a minted user_id must never
+# alias. ``_shared`` is the shared-document namespace (documents/_shared/): docs
+# placed there surface in every user's picker via a resolution fallback. The
+# charset ``[a-z0-9_-]`` would otherwise accept ``_shared`` as a user_id, letting
+# a minted user shadow/own the shared namespace — so it is rejected here, at the
+# identity boundary, closing that hole.
+_RESERVED_USER_IDS = frozenset({"_shared"})
+
 
 def sanitize_user_id(raw: str) -> str | None:
     """Return ``raw`` if it is a filename-safe slug, else None. The user_id is a
-    filename (not a secret); this guards path traversal and odd characters."""
+    filename (not a secret); this guards path traversal and odd characters.
+
+    Reserved names (e.g. ``_shared``, the shared-document namespace) are rejected
+    so no minted user can alias a reserved directory under ``documents/``."""
     if not raw or not _USER_ID_RE.match(raw):
+        return None
+    if raw in _RESERVED_USER_IDS:
         return None
     # Belt-and-suspenders: the regex already forbids separators.
     return raw if Path(raw).name == raw else None

@@ -11,6 +11,15 @@ def test_sanitize_rejects_traversal_and_junk():
         assert identity.sanitize_user_id(bad) is None
 
 
+def test_sanitize_rejects_reserved_shared_namespace():
+    # ``_shared`` passes the [a-z0-9_-] charset but is the shared-document
+    # namespace directory (documents/_shared/). It must be rejected here, at the
+    # identity boundary, so no minted user can alias/own the shared namespace —
+    # while an ordinary slug still passes through unchanged.
+    assert identity.sanitize_user_id("_shared") is None
+    assert identity.sanitize_user_id("matt") == "matt"
+
+
 def test_load_registry_reads_map(tmp_path, monkeypatch):
     p = tmp_path / "tokens.json"
     p.write_text(json.dumps({"k7f2x9": "sarah", "aa11bb": "dev"}))
