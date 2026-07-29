@@ -482,6 +482,30 @@ def _enforce_input_bound(document_text: str) -> None:
         raise ClaimInputTooLong(words, CLAIM_MAX_WORDS)
 
 
+def rejection_reason(document_text: str) -> str | None:
+    """Advisory: the user-facing rejection message a warm WOULD raise, or None.
+
+    A read-only companion to :func:`_enforce_input_bound` for the transport layer
+    (the upload endpoint) so it can SURFACE the tripwire's message in the upload
+    response without re-implementing the bound. It reuses the SAME single source
+    of truth — :func:`_word_count`, :data:`CLAIM_MAX_WORDS`, and the
+    :class:`ClaimInputTooLong` message — so the surfaced text can never disagree
+    with what the warm seam actually enforces.
+
+    This is NOT a second enforcement site: it never blocks, schedules, or skips a
+    warm, writes no sidecar, and emits no log line (the durable rejection log is
+    the warm seam's job, fired once when extraction is actually attempted). It
+    only answers "if this text were warmed, what would the user be told?" —
+    returning the message for an over-bound doc, or ``None`` for a doc within the
+    bound (word count ``<= CLAIM_MAX_WORDS``). The upload always schedules the
+    warm regardless; this string is purely for display.
+    """
+    words = _word_count(document_text)
+    if words > CLAIM_MAX_WORDS:
+        return str(ClaimInputTooLong(words, CLAIM_MAX_WORDS))
+    return None
+
+
 def extract_claims(document_text: str) -> list[Claim]:
     """Decompose ``document_text`` into an ordered list of :class:`Claim` records.
 
