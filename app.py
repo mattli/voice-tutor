@@ -24,7 +24,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Req
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from pipecat.runner.types import SmallWebRTCRunnerArguments
-from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
+from pipecat.transports.smallwebrtc.connection import IceServer, SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.request_handler import (
     IceCandidate,
     SmallWebRTCPatchRequest,
@@ -42,7 +42,63 @@ import session_state
 import sessions
 
 HOST = os.getenv("VOICE_TUTOR_HOST", "0.0.0.0")
-small_webrtc_handler = SmallWebRTCRequestHandler(esp32_mode=False, host=HOST)
+
+# WebRTC ICE configuration. The public deployment (Tailscale Funnel) tunnels only
+# the HTTPS signaling, not the UDP media, so a REMOTE peer cannot reach the
+# server's host/tailnet ICE candidates — a TURN relay is required for anyone off
+# the local network (local/tailnet peers still connect directly and use no relay).
+# Only the username/credential are secret (loaded from .env); the metered relay
+# URLs and the STUN URL are public. When the two env vars are ABSENT the config
+# degrades to STUN-only (the prior behavior), so removing them + restarting is a
+# complete no-rebuild revert. Configured on BOTH sides: the server handler (so the
+# server gathers reachable relay candidates) and the browser (via /api/ice-config,
+# consumed by static/study.html) — both are required for a remote media path.
+_TURN_USERNAME = os.getenv("METERED_TURN_USERNAME")
+_TURN_CREDENTIAL = os.getenv("METERED_TURN_CREDENTIAL")
+_STUN_URL = "stun:stun.relay.metered.ca:80"
+_TURN_URLS = (
+    "turn:global.relay.metered.ca:80",
+    "turn:global.relay.metered.ca:80?transport=tcp",
+    "turn:global.relay.metered.ca:443",
+    "turns:global.relay.metered.ca:443?transport=tcp",
+)
+
+
+def ice_servers_dicts() -> list[dict]:
+    """ICE servers as plain dicts for the browser's RTCPeerConnection. STUN always;
+    the authenticated TURN relays are added only when creds are configured."""
+    servers: list[dict] = [{"urls": _STUN_URL}]
+    if _TURN_USERNAME and _TURN_CREDENTIAL:
+        servers += [
+            {"urls": u, "username": _TURN_USERNAME, "credential": _TURN_CREDENTIAL}
+            for u in _TURN_URLS
+        ]
+    return servers
+
+
+def _ice_servers_objs() -> list[IceServer]:
+    """Server-side ICE servers for aiortc's own candidate gathering. Deliberately
+    LEANER than the browser's list: the server only needs ONE reachable relay
+    candidate, so it uses just the UDP TURN endpoint (the one that allocates from
+    this host) and NO STUN. The metered TCP/TLS relay endpoints are outbound-blocked
+    from the Mini and only add ~5s of gathering latency (failed allocations time
+    out), and STUN srflx is unnecessary when a relay exists and its retries on dead
+    interfaces stall the answer. Empty when creds are absent → host-only gathering
+    (the prior local-only behavior)."""
+    if _TURN_USERNAME and _TURN_CREDENTIAL:
+        return [
+            IceServer(
+                urls="turn:global.relay.metered.ca:80",
+                username=_TURN_USERNAME,
+                credential=_TURN_CREDENTIAL,
+            )
+        ]
+    return []
+
+
+small_webrtc_handler = SmallWebRTCRequestHandler(
+    esp32_mode=False, host=HOST, ice_servers=_ice_servers_objs()
+)
 
 
 @asynccontextmanager
@@ -75,6 +131,15 @@ def require_user(request: Request) -> str:
 @app.get("/api/whoami")
 async def whoami(user_id: str = Depends(require_user)):
     return {"user_id": user_id}
+
+
+@app.get("/api/ice-config")
+async def ice_config(user_id: str = Depends(require_user)):
+    """ICE servers (STUN + authenticated TURN relays) for the browser. Auth-gated
+    so only invited users receive the relay credentials; static/study.html fetches
+    this right before creating its RTCPeerConnection, and falls back to STUN-only
+    if it fails."""
+    return {"iceServers": ice_servers_dicts()}
 
 
 @app.post("/api/offer")
@@ -125,9 +190,7 @@ async def rtvi_start(request: Request):
     active_sessions[session_id] = request_data.get("body") or {}
     result: Dict[str, Any] = {"sessionId": session_id}
     if request_data.get("enableDefaultIceServers"):
-        result["iceConfig"] = {
-            "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-        }
+        result["iceConfig"] = {"iceServers": ice_servers_dicts()}
     return result
 
 

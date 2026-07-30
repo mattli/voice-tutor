@@ -1070,7 +1070,12 @@
   });
 
   async function connect() {
-    pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    // Fetch ICE config (STUN + authenticated TURN relays) from the server; a TURN
+    // relay is required to connect from off the local network (Tailscale Funnel
+    // carries only the HTTPS signaling, not the media). Fall back to STUN-only.
+    const _fallbackIce = [{ urls: 'stun:stun.l.google.com:19302' }];
+    const iceCfg = await fetch('/api/ice-config').then(r => r.ok ? r.json() : null).catch(() => null);
+    pc = new RTCPeerConnection({ iceServers: (iceCfg && iceCfg.iceServers) || _fallbackIce });
     pc.addTransceiver('audio', { direction: 'sendrecv' });
     localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     for (const t of localStream.getTracks()) pc.addTrack(t, localStream);
@@ -1094,12 +1099,39 @@
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
+    // Non-trickle: the server does not reliably receive trickled candidates
+    // (PATCH /api/offer) from remote peers, so we send the candidates in the offer
+    // itself. Resolve as soon as the TURN *relay* candidate is gathered — that's
+    // all a remote peer needs — rather than waiting out the full gather (slow
+    // STUN/host timeouts on dead interfaces). Falls back to gather-complete, then a
+    // 5s cap so a stalled source can't hang the start.
+    await new Promise(resolve => {
+      if (pc.iceGatheringState === 'complete') return resolve();
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        pc.removeEventListener('icegatheringstatechange', onGather);
+        pc.removeEventListener('icecandidate', onCand);
+        clearTimeout(timer);
+        resolve();
+      };
+      const onGather = () => { if (pc.iceGatheringState === 'complete') finish(); };
+      const onCand = ev => {
+        if (ev.candidate && ev.candidate.candidate &&
+            ev.candidate.candidate.indexOf(' typ relay') !== -1) finish();
+      };
+      const timer = setTimeout(finish, 5000);
+      pc.addEventListener('icegatheringstatechange', onGather);
+      pc.addEventListener('icecandidate', onCand);
+    });
+
     const resp = await fetch('/api/offer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        sdp: offer.sdp,
-        type: offer.type,
+        sdp: pc.localDescription.sdp,
+        type: pc.localDescription.type,
         request_data: { document_id: currentDoc.document_id, session_id: sessionId },
       }),
     });
