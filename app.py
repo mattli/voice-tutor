@@ -41,6 +41,29 @@ import session_naming
 import session_state
 import sessions
 
+# TURN lifecycle logging (permanent). The relay's allocation is the single
+# mid-session dependency that can fail SILENTLY: aioice logs "TURN allocation
+# created/refreshed" at INFO — below uvicorn's default threshold — and refreshes it
+# from a bare asyncio task whose death is reported only by the asyncio logger.
+# Without these two loggers, an expired or unrefreshed relay is invisible in the
+# log and presents to the user as audio simply stopping while the UI still reads
+# "Listening…" — indistinguishable from the connectivity bug fixed in 885619a.
+#
+# These lines are what made the 2026-07-30 expiry test conclusive (the refresh was
+# observed firing and succeeding at the 500s mark, keeping a session alive past the
+# 600s expiry), and they are the first thing to read if a session dies mid-call.
+# Emits relay addresses and lifetimes only — never the TURN credentials.
+import logging as _logging  # noqa: E402
+
+_turn_h = _logging.StreamHandler()
+_turn_h.setFormatter(_logging.Formatter("%(asctime)s TURNDBG %(name)s %(levelname)s: %(message)s"))
+for _n in ("aioice.turn", "asyncio"):
+    _l = _logging.getLogger(_n)
+    _l.setLevel(_logging.INFO)
+    _l.addHandler(_turn_h)
+    _l.propagate = False
+
+
 HOST = os.getenv("VOICE_TUTOR_HOST", "0.0.0.0")
 
 # WebRTC ICE configuration. The public deployment (Tailscale Funnel) tunnels only
