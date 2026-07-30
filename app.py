@@ -55,7 +55,11 @@ HOST = os.getenv("VOICE_TUTOR_HOST", "0.0.0.0")
 # consumed by static/study.html) — both are required for a remote media path.
 _TURN_USERNAME = os.getenv("METERED_TURN_USERNAME")
 _TURN_CREDENTIAL = os.getenv("METERED_TURN_CREDENTIAL")
-_STUN_URL = "stun:stun.relay.metered.ca:80"
+# Two independent STUN providers so metered.ca is not a single point of failure:
+# if it is degraded or over quota the browser still has Google's STUN to gather a
+# srflx candidate. Browsers query STUN servers in parallel, so the extra entry
+# costs no startup latency.
+_STUN_URLS = ("stun:stun.relay.metered.ca:80", "stun:stun.l.google.com:19302")
 _TURN_URLS = (
     "turn:global.relay.metered.ca:80",
     "turn:global.relay.metered.ca:80?transport=tcp",
@@ -67,7 +71,7 @@ _TURN_URLS = (
 def ice_servers_dicts() -> list[dict]:
     """ICE servers as plain dicts for the browser's RTCPeerConnection. STUN always;
     the authenticated TURN relays are added only when creds are configured."""
-    servers: list[dict] = [{"urls": _STUN_URL}]
+    servers: list[dict] = [{"urls": u} for u in _STUN_URLS]
     if _TURN_USERNAME and _TURN_CREDENTIAL:
         servers += [
             {"urls": u, "username": _TURN_USERNAME, "credential": _TURN_CREDENTIAL}
@@ -98,6 +102,18 @@ def _ice_servers_objs() -> list[IceServer]:
 
 small_webrtc_handler = SmallWebRTCRequestHandler(
     esp32_mode=False, host=HOST, ice_servers=_ice_servers_objs()
+)
+
+# Startup status line for the TURN relay. Without it, a missing/invalid/over-quota
+# relay is INDISTINGUISHABLE at the log level from the pre-fix bug: a remote tester
+# just spins on "connecting" and nothing is written anywhere. Prints the configured
+# state only — never the credentials.
+print(
+    "[webrtc] TURN relay: CONFIGURED (remote peers can connect)"
+    if (_TURN_USERNAME and _TURN_CREDENTIAL)
+    else "[webrtc] TURN relay: NOT CONFIGURED — remote/internet peers will FAIL to "
+    "connect (set METERED_TURN_USERNAME + METERED_TURN_CREDENTIAL in .env)",
+    flush=True,
 )
 
 
@@ -181,7 +197,12 @@ active_sessions: Dict[str, Dict[str, Any]] = {}
 
 
 @app.post("/start")
-async def rtvi_start(request: Request):
+async def rtvi_start(request: Request, user_id: str = Depends(require_user)):
+    # Auth-gated for the same reason as /api/ice-config: the iceConfig below can
+    # carry the TURN relay CREDENTIALS. Without this dependency the route handed
+    # them to any unauthenticated caller on the public URL (letting a stranger
+    # relay traffic on our metered.ca quota). /chat/'s offers already 403 at
+    # offer(), so gating here costs that flow nothing it wasn't already denied.
     try:
         request_data = await request.json()
     except Exception:
