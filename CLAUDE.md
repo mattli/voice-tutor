@@ -80,3 +80,37 @@ that callers append a suffix — instead return a placeholder for `""`/`"."`/`".
 `session_naming.safe_session_id`). Regression tests: `tests/test_cross_user_doc_traversal.py`,
 `tests/test_session_id_traversal.py` (and note pathlib+os.stat only traverses `..` when the
 caller's OWN dir exists — a traversal test must materialize it or it passes vacuously).
+
+## Production is a launchd agent on :7860; never run `./start.sh` by hand; dev on a worktree (2026-08-01)
+
+Production is the always-on launchd agent `com.voice-tutor.server` (KeepAlive + RunAtLoad)
+running `start.sh` on `0.0.0.0:7860`, exposed publicly via Tailscale Funnel
+(`https://matts-mac-mini.taild1f9b7.ts.net/` → :7860). It survives crashes and reboots.
+
+- **Don't run `./start.sh` by hand on this machine.** Its `lsof -ti :7860 | xargs kill -9`
+  (~line 8) would hard-kill the live server (then fight KeepAlive for the port), destroying
+  any in-flight tester session's transcript/recap. A guard now blocks this: `start.sh` refuses
+  an interactive run while the agent is loaded and prints the kickstart command instead. It
+  passes the launchd-spawned instance through by checking `XPC_SERVICE_NAME == com.voice-tutor.server`
+  (the label launchd sets), so production's own restart is unaffected — never change the guard
+  in a way that also blocks that instance, or the agent won't restart.
+- **Restart production** (only when confirmed idle — a restart drops in-flight sessions):
+  `launchctl kickstart -k gui/$(id -u)/com.voice-tutor.server`. No deploy pipeline exists:
+  "deploy" = land code on `main` in `~/development/voice-tutor`, then kickstart.
+- **Test locally on the isolated worktree, never in the live checkout** — editing `static/` in
+  the live checkout changes what testers see *instantly* (files are served per-request). Worktree:
+  `~/development/voice-tutor-dev` (branch `local-dev`); `./dev.sh` runs uvicorn on `127.0.0.1:7861`
+  with `--reload`, localhost-only, reusing the main venv and reading `.env` read-only. The lane
+  isolates **code, not data** — it still writes to shared `~/.voice-tutor/` + `~/second-brain/`
+  and uses the same `tokens.json`.
+
+## Provisioning a tester — add a token to `tokens.json` (no restart) (2026-08-01)
+
+Testers authenticate via an invite token in `~/.voice-tutor/tokens.json` (`{token: user_id}`).
+To add one: mint a 32-char base62 token, add `{token: "<name>"}`, hand over
+`https://matts-mac-mini.taild1f9b7.ts.net/study/?u=<token>`. The registry is read fresh on every
+authenticated request (`app.py:164` → `identity.resolve_cookie` → `load_registry`, `identity.py:71`
++ `42`; verified live — a throwaway token resolved on the running server with no restart, pid
+unchanged), so a new token works **immediately, no restart**. `tokens.json` gates *every* tester,
+so a corrupt write 403s everyone — back it up, write atomically (temp + `os.replace`), preserve
+existing entries, and verify with `identity.resolve_user(token, load_registry())`.

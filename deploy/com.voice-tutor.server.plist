@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Voice Tutor server as an always-on launchd agent (mirrors ./start.sh).
+  DRAFT FOR REVIEW — not loaded, not committed. See deploy notes / repo CLAUDE.md.
+
+  Runs start.sh unchanged, so it keeps start.sh's own behavior: cd into the repo,
+  kill any stale :7860 process, `source .env` for API keys, verify the three keys,
+  then `exec uv run uvicorn app:app ... --proxy-headers` (tee-ing to voice-tutor.log).
+
+  KeepAlive + RunAtLoad make it self-healing and boot-persistent, like the
+  dev-harness dashboard. EnvironmentVariables.PATH is explicit because launchd runs
+  with a minimal PATH that would NOT find `uv` (~/.local/bin) or `lsof` (/usr/sbin).
+  Secrets stay OUT of this file — they come from .env via start.sh.
+
+  Install / load (LATER — do not run yet):
+    cp deploy/com.voice-tutor.server.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.voice-tutor.server.plist
+  Restart:  launchctl kickstart -k gui/$(id -u)/com.voice-tutor.server
+  Status :  launchctl print gui/$(id -u)/com.voice-tutor.server | head
+  Remove :  launchctl bootout gui/$(id -u)/com.voice-tutor.server   (then delete the copy)
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.voice-tutor.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/mattli/development/voice-tutor/start.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/mattli/development/voice-tutor</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/mattli/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/mattli/Library/Logs/voice-tutor.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/mattli/Library/Logs/voice-tutor.log</string>
+</dict>
+</plist>
