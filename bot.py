@@ -203,6 +203,7 @@ from session_state import (
     _format_memory_date,
     _format_session_time,
     append_to_memory,
+    has_min_user_turns,
     load_memory,
     load_most_recent_transcript_block,
     load_profile,
@@ -218,14 +219,14 @@ COST_LOG_PATH = Path.home() / "second-brain" / "products" / "voice-tutor" / "val
 # per row, not the whole story); the human-facing report keeps the cost-log.md name.
 SESSION_LOG_JSONL_PATH = COST_LOG_PATH.with_name("session-log.jsonl")
 SESSION_ANALYSIS_DIR = Path.home() / "second-brain" / "products" / "voice-tutor" / "session-analyses"
-# Lower bound (in seconds) before we spend Haiku tokens on a session summary or
-# analysis. 120 is the production default — shorter sessions tend to produce
-# thin summaries that pollute memory.md. Set VOICE_TUTOR_MIN_TELEMETRY_SEC in
-# .env to override both thresholds together (useful for demos where you want
-# the full diagnostics panel to populate from a ~1-min session).
-_min_telemetry_override = os.getenv("VOICE_TUTOR_MIN_TELEMETRY_SEC")
-MIN_ANALYSIS_DURATION_SEC = int(_min_telemetry_override) if _min_telemetry_override else 120
-MIN_SUMMARY_DURATION_SEC = int(_min_telemetry_override) if _min_telemetry_override else 120
+# Gate the post-session summary + analysis on whether the USER actually spoke,
+# not on wall-clock duration. A session is summarized + analyzed iff the user
+# took at least MIN_USER_TURNS turns; the tutor's hidden kickoff and its replies
+# don't count (see session_state.has_min_user_turns). Duration was a poor proxy —
+# a real 103s/3-turn session was silently dropped at the old 120s floor. Default
+# 1 (any session where the user spoke at all); env-tunable so the floor can be
+# raised without a rebuild.
+MIN_USER_TURNS = int(os.getenv("VOICE_TUTOR_MIN_USER_TURNS", "1"))
 
 # Cartesia Sonic-3 speed multiplier. Valid range [0.6, 1.5]; 1.0 is default.
 # Unset → omit the override entirely so behavior matches the pre-flag baseline.
@@ -875,7 +876,7 @@ async def bot(runner_args):
         # (~$0.025/session) but unaccounted for vs the Anthropic dashboard.
         post_input = 0
         post_output = 0
-        if summary["session_duration_sec"] >= MIN_SUMMARY_DURATION_SEC:
+        if has_min_user_turns(turns, MIN_USER_TURNS):
             u = generate_session_summary(user_id, stem, transcript)
             if u:
                 post_input += u["input_tokens"]
@@ -884,7 +885,7 @@ async def bot(runner_args):
             if summary_path.exists():
                 append_to_memory(user_id, transcript, summary_path.read_text())
 
-        if summary["session_duration_sec"] >= MIN_ANALYSIS_DURATION_SEC:
+        if has_min_user_turns(turns, MIN_USER_TURNS):
             u = generate_session_analysis(
                 user_id,
                 stem,

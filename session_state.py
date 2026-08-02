@@ -90,3 +90,42 @@ def load_most_recent_transcript_block(user_id: str) -> str | None:
         return None
     transcript = json.loads(files[0].read_text())
     return _format_full_transcript_block(transcript, header_suffix=" (most recent)")
+
+
+def count_user_turns(turns: list[dict]) -> int:
+    """Number of USER utterances in a transcript's turn list.
+
+    Counts only turns with role ``'user'`` — the tutor's hidden kickoff and its
+    spoken replies (role ``'assistant'``) are excluded. This is deliberately NOT
+    a total-turn count.
+    """
+    return sum(1 for t in turns if t.get("role") == "user")
+
+
+def has_min_user_turns(turns: list[dict], minimum: int) -> bool:
+    """Whether the USER spoke at least ``minimum`` times this session.
+
+    The telemetry gate: a session's summary + analysis are generated iff this is
+    True. Keys on USER utterances only (see ``count_user_turns``) — a session
+    where only the tutor's opener fired and the user never spoke returns False
+    and is skipped. Deliberately NOT a total-turn threshold, so nobody mistakes
+    it for one: the assistant kickoff must never make an otherwise-silent session
+    look answered.
+    """
+    return count_user_turns(turns) >= minimum
+
+
+def session_expects_summary(transcript_path: Path, min_user_turns: int) -> bool:
+    """Whether the session at ``transcript_path`` WILL produce a summary/analysis.
+
+    Applies the SAME user-turn gate (``has_min_user_turns``) that bot.py uses at
+    write time, so the /telemetry poll's done-condition can only expect what the
+    writer actually produces — an expectation the writer can never satisfy would
+    make the poll spin to its cap. A missing or unreadable transcript (the user
+    never spoke, so no transcript was written) → False.
+    """
+    try:
+        turns = json.loads(transcript_path.read_text()).get("turns", [])
+    except (OSError, json.JSONDecodeError):
+        return False
+    return has_min_user_turns(turns, min_user_turns)

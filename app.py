@@ -527,6 +527,7 @@ async def get_telemetry(session_id: str, user_id: str = Depends(require_user)):
     summary_path = TRANSCRIPTS_DIR / user_id / f"{safe_id}.summary.md"
     analysis_path = session_naming.find_analysis_path(SESSION_ANALYSES_DIR, user_id, safe_id)
     prompt_path = TRANSCRIPTS_DIR / user_id / f"{safe_id}.prompt.txt"
+    transcript_path = TRANSCRIPTS_DIR / user_id / f"{safe_id}.json"
     doc_info = _lookup_session_doc(user_id, safe_id) or {"document_id": None, "document_title": None}
     result = {
         "recap": artifact_path.read_text() if artifact_path.exists() else None,
@@ -534,9 +535,12 @@ async def get_telemetry(session_id: str, user_id: str = Depends(require_user)):
         "memory_append": summary_path.read_text() if summary_path.exists() else None,
         "analysis": analysis_path.read_text() if analysis_path else None,
         "has_prompt": prompt_path.exists(),
-        # The frontend uses this to decide whether to wait for memory_append /
-        # analysis on shorter sessions. Mirrors bot.py's MIN_SUMMARY_DURATION_SEC.
-        "min_summary_sec": bot.MIN_SUMMARY_DURATION_SEC,
+        # Whether this session WILL produce a summary/analysis — the same user-turn
+        # gate bot.py writes by (session_state.has_min_user_turns), computed here so
+        # the frontend poll only waits for memory_append/analysis when they're
+        # actually coming. Never expect what the writer won't produce, or the poll
+        # spins to its cap.
+        "expects_summary": session_state.session_expects_summary(transcript_path, bot.MIN_USER_TURNS),
         # Document context for page-load restoration when URL has ?session=<id>.
         "document_id": doc_info["document_id"],
         "document_title": doc_info["document_title"],

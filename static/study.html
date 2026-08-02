@@ -879,7 +879,6 @@
 <script>
   // ─── constants ─────────────────────────────────────
   const MIN_RECAP_DURATION_SEC = 5;
-  const DEFAULT_MIN_FULL_TELEMETRY_SEC = 120;  // overridden per-response from server
   const MAX_POLL_ATTEMPTS = 30;  // 30 × 2s = 60s
 
   // ─── DOM refs ──────────────────────────────────────
@@ -1210,6 +1209,20 @@
     });
   }
 
+  // POLL_DONE_START
+  // Terminate polling once everything this session will produce has landed.
+  // data.expects_summary is the SERVER's verdict (the same user-turn gate bot.py
+  // writes by), so we wait for memory_append/analysis ONLY when they are actually
+  // coming; for a skipped session (user never spoke) they never arrive and must
+  // not be required, or the poll spins to its cap. Matt-only fields (has_prompt,
+  // analysis) are redacted for non-Matt and so are not required for them.
+  function pollIsDone(data, isMatt) {
+    const expectsSummary = !!data.expects_summary;
+    return !!(data.recap && data.cost && (!isMatt || data.has_prompt)
+      && (!expectsSummary || (data.memory_append && (!isMatt || data.analysis))));
+  }
+  // POLL_DONE_END
+
   // ─── telemetry polling ─────────────────────────────
   function startPolling() {
     if (pollTimer) clearInterval(pollTimer);
@@ -1223,10 +1236,7 @@
         if (r.ok) {
           const data = await r.json();
           renderTelemetry(data, target);
-          const minSec = data.min_summary_sec || DEFAULT_MIN_FULL_TELEMETRY_SEC;
-          const expectsSummary = elapsedAtEndSec >= minSec;
-          const done = data.recap && data.cost && (!window.__isMatt || data.has_prompt)
-            && (!expectsSummary || (data.memory_append && (!window.__isMatt || data.analysis)));
+          const done = pollIsDone(data, window.__isMatt);
           if (done) {
             clearInterval(pollTimer); pollTimer = null;
             return;
