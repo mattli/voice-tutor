@@ -103,6 +103,13 @@ running `start.sh` on `0.0.0.0:7860`, exposed publicly via Tailscale Funnel
   with `--reload`, localhost-only, reusing the main venv and reading `.env` read-only. The lane
   isolates **code, not data** — it still writes to shared `~/.voice-tutor/` + `~/second-brain/`
   and uses the same `tokens.json`.
+- **Rebase `local-dev` before trusting a local test.** The worktree is a branch, not a mirror: every
+  merge to `main` leaves it further behind, and `dev.sh` happily serves the stale code with no
+  warning that it's out of date. On 2026-08-02 it sat 4 commits behind — it would still have
+  addressed testers as "Matt" and used the retired 120s analysis gate, i.e. reproduced bugs that
+  were already fixed in production. `git rebase main local-dev` in the worktree (it carries one
+  commit, `dev.sh`, that nothing else touches, so conflicts are unlikely). Check with
+  `git log --oneline local-dev..main` before any local verification you intend to believe.
 
 ## Provisioning a tester — add a token to `tokens.json` (no restart) (2026-08-01)
 
