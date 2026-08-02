@@ -39,6 +39,19 @@ def sanitize_user_id(raw: str) -> str | None:
     return raw if Path(raw).name == raw else None
 
 
+def display_name(user_id: str) -> str:
+    """Human-facing first name for prompts, derived from the user_id slug.
+
+    The slug IS the person's lowercased first name for every real user (no
+    separate name is stored), so title-casing it recovers the display name:
+    ``"jorge" -> "Jorge"``. ``-``/``_`` become spaces. Empty (never a real call
+    site) falls back to a generic label so a name never renders blank in a prompt.
+    """
+    if not user_id:
+        return "the user"
+    return user_id.replace("-", " ").replace("_", " ").title()
+
+
 def load_registry() -> dict[str, str]:
     """Load the {token: user_id} map. Absent or malformed → empty (fail closed)."""
     path = TOKENS_PATH

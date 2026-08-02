@@ -11,6 +11,7 @@ import anthropic
 
 import claims
 import documents
+import identity
 import study_history
 import wiki
 from usage_ledger import UsageLedger
@@ -249,21 +250,21 @@ Numbered list of the main topics/threads discussed, with a one-sentence summary 
 
 ## Knowledge sources
 Estimate how much of the conversation drew from each pre-loaded context source vs the \
-LLM's general knowledge vs Matt's own ideas. Use a simple table with columns: Source, \
+LLM's general knowledge vs {user_name}'s own ideas. Use a simple table with columns: Source, \
 Approx turns, Notes. Sources are:
 - "On-demand wiki pages" — content fetched via read_wiki_page tool calls during the session
 - "Pre-loaded wiki INDEX" — the wiki table of contents in the system prompt (titles and one-line descriptions only, not full page content)
 - "Prior-session memory" — the "What we've discussed" block summarizing past sessions
 - "Most-recent transcript" — the verbatim block from the previous session
 - "General LLM knowledge" — things the model knows independent of any loaded context
-- "Matt's own knowledge/ideas" — claims, framing, or context Matt introduced himself
+- "{user_name}'s own knowledge/ideas" — claims, framing, or context {user_name} introduced themselves
 
 Be specific in Notes about which facts came from which source — don't lump everything \
 pre-loaded into one bucket. Note the key finding: which source(s) carried the conversation, \
 and was the wiki itself central or peripheral?
 
 ## Interaction quality notes
-Bullet points on: pacing issues (did Matt ask to slow down?), STT errors (misheard words), \
+Bullet points on: pacing issues (did {user_name} ask to slow down?), STT errors (misheard words), \
 interruptions, response length compliance, and anything else notable about the interaction dynamics.
 
 Here is the session data:
@@ -405,10 +406,10 @@ Skip this section if there are none.
 
 BASE_INSTRUCTION = (
     "You are a friendly, curious conversational partner and tutor. "
-    "Be concise. Say one thought at a time, then let Matt respond. "
+    "Be concise. Say one thought at a time, then let {user_name} respond. "
     "One to two sentences per turn. Never monologue. "
     "Be warm but not sycophantic. Never repeat yourself. "
-    "You know Matt from prior conversations. "
+    "You know {user_name} from prior conversations. "
     "Reference past topics naturally when relevant, but don't force it."
 )
 
@@ -416,8 +417,8 @@ BASE_INSTRUCTION = (
 # bot.py rather than wiki.py because it's about persona framing, not the tool
 # itself — the wiki module owns the actual section block and usage rules.
 WIKI_TAGLINE = (
-    " You have access to Matt's personal knowledge wiki — use it to teach, "
-    "connect ideas, and reference things he's been reading and learning about."
+    " You have access to {user_name}'s personal knowledge wiki — use it to teach, "
+    "connect ideas, and reference things they've been reading and learning about."
 )
 
 # Restated at the very end of the system prompt so it stays close to the model's
@@ -448,7 +449,7 @@ WIKI_ENABLED = os.getenv("WIKI_ENABLED", "true").lower() in ("1", "true", "yes")
 
 SUMMARY_PROMPT = """\
 Summarize this voice tutoring conversation in 3-5 short bullet points. Cover what \
-was discussed, any decisions Matt made, and any open questions or next steps. Be \
+was discussed, any decisions {user_name} made, and any open questions or next steps. Be \
 terse — this is loaded as context into a future voice session so the tutor can \
 pick up continuity. Output only the bullets (one per line, starting with "- "). \
 No preamble, no trailing prose.
@@ -458,8 +459,26 @@ No preamble, no trailing prose.
 """
 
 
+def _summary_prompt(user_name: str, transcript: dict) -> str:
+    return SUMMARY_PROMPT.format(
+        user_name=user_name,
+        transcript_json=json.dumps(transcript, indent=2),
+    )
+
+
+def _analysis_prompt(
+    user_name: str, summary: dict, tool_calls: list[dict], transcript: dict
+) -> str:
+    return ANALYSIS_PROMPT.format(
+        user_name=user_name,
+        usage_json=json.dumps(summary, indent=2),
+        tool_calls_json=json.dumps(tool_calls, indent=2) if tool_calls else "[]",
+        transcript_json=json.dumps(transcript, indent=2),
+    )
+
+
 def generate_session_summary(user_id: str, stem: str, transcript: dict) -> dict | None:
-    prompt = SUMMARY_PROMPT.format(transcript_json=json.dumps(transcript, indent=2))
+    prompt = _summary_prompt(identity.display_name(user_id), transcript)
     try:
         client = anthropic.Anthropic()
         resp = client.messages.create(
@@ -486,11 +505,7 @@ def generate_session_analysis(
     session_start: datetime,
     session_id: str | None,
 ) -> dict | None:
-    prompt = ANALYSIS_PROMPT.format(
-        usage_json=json.dumps(summary, indent=2),
-        tool_calls_json=json.dumps(tool_calls, indent=2) if tool_calls else "[]",
-        transcript_json=json.dumps(transcript, indent=2),
-    )
+    prompt = _analysis_prompt(identity.display_name(user_id), summary, tool_calls, transcript)
     try:
         client = anthropic.Anthropic()
         resp = client.messages.create(
@@ -616,6 +631,7 @@ def build_system_instruction(user_id: str, study: dict | None = None) -> str:
     context from leaking into another's session.
     """
     profile = load_profile(user_id)
+    name = identity.display_name(user_id)
 
     if study is not None:
         base = STUDY_BASE_INSTRUCTION_WITH_OPENING if SESSION_OPENING else STUDY_BASE_INSTRUCTION
@@ -625,7 +641,7 @@ def build_system_instruction(user_id: str, study: dict | None = None) -> str:
         memory = load_memory(user_id)
         if memory:
             parts.append(
-                "\n# Background — Matt's prior topics (reference only if directly relevant to the document)\n\n"
+                f"\n# Background — {name}'s prior topics (reference only if directly relevant to the document)\n\n"
                 + memory
             )
         previously = study.get("previously") if SESSION_OPENING else None
@@ -639,7 +655,7 @@ def build_system_instruction(user_id: str, study: dict | None = None) -> str:
         parts.append(STUDY_REMINDER)
         return "\n".join(parts)
 
-    base = BASE_INSTRUCTION + (WIKI_TAGLINE if WIKI_ENABLED else "")
+    base = (BASE_INSTRUCTION + (WIKI_TAGLINE if WIKI_ENABLED else "")).replace("{user_name}", name)
     parts = [base]
 
     if profile:

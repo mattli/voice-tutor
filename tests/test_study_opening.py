@@ -130,18 +130,37 @@ def test_regular_mode_hash_unaffected_by_flag(imported_bot, monkeypatch):
     assert on == off  # non-study mode is untouched by session-opening
 
 
-# Captured from the pristine tree BEFORE identity threading (Task 1). Pinned as
-# LITERALS so any accidental change to static prompt CONTENT breaks loudly —
-# every historical session-log.jsonl row carries prompt_hash and must stay attributable.
-PRE_CHANGE_STUDY_HASH_FLAG_ON = "37a27d252d52265cd3e5a010636e409038d707cb6bc0029885aa6677f46afbb2"
-PRE_CHANGE_REGULAR_HASH = "dd9f2ab66e99687a32fdb7e51f6acdec9ba6567e2419483cd9e62bb57d482dac"
+# Pinned as LITERALS so any accidental change to static prompt CONTENT breaks
+# loudly — every historical session-log.jsonl row carries prompt_hash and must
+# stay attributable.
+#
+# STUDY hash is UNCHANGED by the de-hardcode-"Matt" work: STUDY_BASE_INSTRUCTION +
+# reminders carry no name, so every tester (study) row stays attributable to the
+# same hash. REGULAR hash bumped ONCE when BASE_INSTRUCTION/WIKI_TAGLINE were
+# rewritten to thread the per-user name — an intentional prompt-version change,
+# acknowledged here by updating the pinned literal. It stays user-INDEPENDENT:
+# static_prompt_hash takes no user_id and hashes the {user_name} PLACEHOLDER, not a
+# substituted name (see test_regular_hash_is_user_independent below).
+STUDY_HASH_FLAG_ON = "37a27d252d52265cd3e5a010636e409038d707cb6bc0029885aa6677f46afbb2"
+PRE_NAME_THREADING_REGULAR_HASH = "dd9f2ab66e99687a32fdb7e51f6acdec9ba6567e2419483cd9e62bb57d482dac"
+REGULAR_HASH = "a3bee9745c0a28a8ba8d5ae380d726f05b659d3b5b3f51072acfe808741b8e8b"
 
 
 def test_flag_on_study_hash_matches_pinned_literal(imported_bot, monkeypatch):
     monkeypatch.setattr(imported_bot, "SESSION_OPENING", True)
-    assert imported_bot.static_prompt_hash(study=True) == PRE_CHANGE_STUDY_HASH_FLAG_ON
+    assert imported_bot.static_prompt_hash(study=True) == STUDY_HASH_FLAG_ON
 
 
 def test_regular_mode_hash_matches_pinned_literal(imported_bot, monkeypatch):
     monkeypatch.setattr(imported_bot, "SESSION_OPENING", False)
-    assert imported_bot.static_prompt_hash(study=False) == PRE_CHANGE_REGULAR_HASH
+    got = imported_bot.static_prompt_hash(study=False)
+    assert got == REGULAR_HASH
+    assert got != PRE_NAME_THREADING_REGULAR_HASH  # the name-threading version bump
+
+
+def test_regular_hash_is_user_independent(imported_bot):
+    # The hashed regular scaffolding keeps the {user_name} PLACEHOLDER (substitution
+    # happens later, per-session, in build_system_instruction), so the prompt hash is
+    # a pure prompt-VERSION fingerprint and never varies by who is in the session.
+    assert "{user_name}" in imported_bot.BASE_INSTRUCTION
+    assert "{user_name}" in imported_bot.WIKI_TAGLINE
