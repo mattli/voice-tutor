@@ -416,16 +416,39 @@ def _coerce_verdict(item: Any) -> Verdict:
                 f"verdict {cid!r} turns must be a list of ints, got element {t!r}"
             )
         norm_turns.append(t)
-    # The judge's per-claim rationale. Optional (a model may omit it) but kept
-    # when present — see Verdict.reason.
-    reason = item.get("reason")
-    if reason is not None and not isinstance(reason, str):
-        raise VerdictShapeError(
-            f"verdict {cid!r} reason must be a string when present, got {reason!r}"
-        )
     return Verdict(
-        claim_id=cid.strip(), covered=covered, turns=norm_turns, reason=reason
+        claim_id=cid.strip(),
+        covered=covered,
+        turns=norm_turns,
+        reason=_coerce_reason(item.get("reason")),
     )
+
+
+# Cap on a coerced rationale, so a pathological model reply cannot bloat the
+# sidecar. Generous — a real per-claim reason is a sentence or two.
+_MAX_REASON_CHARS = 2000
+
+
+def _coerce_reason(reason: Any) -> str | None:
+    """Normalize the judge's per-claim rationale to a string (or ``None``).
+
+    ``reason`` is AUDITING METADATA, not the answer. Rejecting a whole verdict
+    set because the model returned the rationale in the wrong type cost the
+    session its entire coverage number for a harmless model quirk — the run
+    failed, a retry was burned, and a recoverable hiccup became "no number at
+    all". So a non-string rationale is COERCED (``str``, capped at
+    :data:`_MAX_REASON_CHARS`) rather than raised on: the verdict — the part that
+    actually matters — is always kept.
+
+    ``None`` (the model omitted it) passes through as ``None``; a string is kept
+    as-is apart from the length cap. Pure.
+    """
+    if reason is None:
+        return None
+    text = reason if isinstance(reason, str) else str(reason)
+    if len(text) > _MAX_REASON_CHARS:
+        return text[:_MAX_REASON_CHARS] + "…[truncated]"
+    return text
 
 
 def verify_turn_citations(verdicts: list[Verdict], valid_turn_indices) -> None:
@@ -463,6 +486,82 @@ def verify_turn_citations(verdicts: list[Verdict], valid_turn_indices) -> None:
             )
 
 
+@dataclass(frozen=True)
+class CitationRepair:
+    """A record of ONE claim's citation being repaired rather than failing the run.
+
+    Emitted by :func:`repair_turn_citations`. ``dropped_turns`` are cited indices
+    that do not exist in the judged transcript; ``downgraded`` is True when the
+    repair left a ``covered: true`` verdict with no citation at all, so the claim
+    was flipped to not-covered (the conservative direction — a repair can never
+    invent coverage).
+    """
+
+    claim_id: str
+    dropped_turns: list[int] = field(default_factory=list)
+    downgraded: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "claim_id": self.claim_id,
+            "dropped_turns": list(self.dropped_turns),
+            "downgraded": self.downgraded,
+        }
+
+
+def repair_turn_citations(
+    verdicts: list[Verdict], valid_turn_indices
+) -> tuple[list[Verdict], list[CitationRepair]]:
+    """Repair unsupported citations claim-by-claim instead of failing the run.
+
+    The blast-radius fix for the strict :func:`verify_turn_citations`: on a real
+    63-claim answer key, ONE hallucinated turn index rejected all 63 verdicts,
+    burned a retry, and (on a second failure) left the session with no coverage
+    number at all. A model that miscites one claim has still judged the other 62
+    perfectly well, so the damage is contained to the claim that was miscited:
+
+      * a cited index that does not exist in ``valid_turn_indices`` is DROPPED
+        from that verdict's ``turns``;
+      * if dropping leaves a ``covered: true`` verdict with NO citation, that one
+        claim is DOWNGRADED to ``covered: false`` (the judge prompt's contract is
+        "no citable turn => not covered"), as is a ``covered: true`` that cited
+        nothing to begin with.
+
+    Every repair moves coverage DOWN, never up, so a repaired verdict set can
+    never credit coverage the transcript does not support — the property that
+    makes repairing safer than rejecting-and-retrying. Verdicts needing no repair
+    are returned unchanged (same objects).
+
+    Returns ``(verdicts, repairs)``; ``repairs`` is empty when nothing was
+    touched, and is persisted into the verdict object so a repaired number is
+    auditable rather than silent. Pure: no I/O, no model call.
+    """
+    valid = set(valid_turn_indices)
+    out: list[Verdict] = []
+    repairs: list[CitationRepair] = []
+    for v in verdicts:
+        dropped = [t for t in v.turns if t not in valid]
+        if not dropped and not (v.covered and not v.turns):
+            out.append(v)
+            continue
+        kept = [t for t in v.turns if t in valid]
+        downgraded = v.covered and not kept
+        out.append(
+            Verdict(
+                claim_id=v.claim_id,
+                covered=False if downgraded else v.covered,
+                turns=kept,
+                reason=v.reason,
+            )
+        )
+        repairs.append(
+            CitationRepair(
+                claim_id=v.claim_id, dropped_turns=dropped, downgraded=downgraded
+            )
+        )
+    return out, repairs
+
+
 def verify_claim_id_coverage(present_ids, expected_ids) -> None:
     """Assert ``present_ids`` is a bijection onto the DISTINCT ``expected_ids``.
 
@@ -493,7 +592,17 @@ def verify_claim_id_coverage(present_ids, expected_ids) -> None:
         )
 
 
-def parse_verdicts(data: Any, expected_ids, valid_turn_indices=None) -> list[Verdict]:
+@dataclass(frozen=True)
+class ParsedVerdicts:
+    """A validated verdict list plus any citation repairs applied to it."""
+
+    verdicts: list[Verdict]
+    repairs: list[CitationRepair] = field(default_factory=list)
+
+
+def parse_verdicts(
+    data: Any, expected_ids, valid_turn_indices=None, *, repair_citations: bool = True
+) -> list[Verdict]:
     """Validate a parsed verdict payload against the ``expected_ids`` claim set.
 
     ``data`` is already-parsed JSON (a list or ``{"verdicts": [...]}`` envelope);
@@ -520,6 +629,32 @@ def parse_verdicts(data: Any, expected_ids, valid_turn_indices=None) -> list[Ver
     ``expected_ids`` itself carries a duplicate, i.e. distinct-count < slot-count).
     ``expected_ids`` is normally duplicate-free (claim ids are unique per
     :func:`load_claims`).
+
+    Citation handling (when ``valid_turn_indices`` is supplied):
+      * ``repair_citations=True`` (the default, and what the judge + CLI use):
+        an unsupported citation is repaired PER CLAIM via
+        :func:`repair_turn_citations` — the bad index is dropped and, if that
+        leaves an uncited coverage claim, that ONE claim is downgraded to
+        not-covered. One miscited claim can no longer discard the other 62.
+      * ``repair_citations=False``: the strict :func:`verify_turn_citations`
+        raises :class:`InvalidTurnCitationError` for the whole set (kept for
+        callers that want the all-or-nothing contract).
+    Use :func:`parse_verdicts_detailed` to see WHICH claims were repaired; this
+    function returns the verdicts alone.
+    """
+    return parse_verdicts_detailed(
+        data, expected_ids, valid_turn_indices, repair_citations=repair_citations
+    ).verdicts
+
+
+def parse_verdicts_detailed(
+    data: Any, expected_ids, valid_turn_indices=None, *, repair_citations: bool = True
+) -> ParsedVerdicts:
+    """:func:`parse_verdicts`, additionally returning the citation repairs applied.
+
+    The repairs are what the judge stamps into its verdict object (and hence the
+    session's coverage sidecar), so a repaired coverage number is auditable
+    instead of silently different from what the model returned.
     """
     expected = list(expected_ids)
     # Distinct expected ids, first-seen order preserved for deterministic output.
@@ -548,23 +683,49 @@ def parse_verdicts(data: Any, expected_ids, valid_turn_indices=None) -> list[Ver
     # Optional so the pure parser stays usable without a transcript, but
     # judge_coverage ALWAYS supplies it — an unvalidated citation is the one
     # defect class that yields a wrong number instead of an error.
+    repairs: list[CitationRepair] = []
     if valid_turn_indices is not None:
-        verify_turn_citations(verdicts, valid_turn_indices)
+        if repair_citations:
+            verdicts, repairs = repair_turn_citations(verdicts, valid_turn_indices)
+        else:
+            verify_turn_citations(verdicts, valid_turn_indices)
 
     by_id = {v.claim_id: v for v in verdicts}
-    return [by_id[cid] for cid in distinct]
+    return ParsedVerdicts(
+        verdicts=[by_id[cid] for cid in distinct], repairs=repairs
+    )
 
 
-def parse_verdicts_text(text: str, expected_ids, valid_turn_indices=None) -> list[Verdict]:
+def parse_verdicts_text(
+    text: str, expected_ids, valid_turn_indices=None, *, repair_citations: bool = True
+) -> list[Verdict]:
     """Fence-strip + JSON-parse ``text``, then validate against ``expected_ids``.
 
     The full transport-defense pipeline as one call: markdown-fence stripping,
     JSON parsing (raising the module's :class:`VerdictJSONError`, never a raw
     ``json.JSONDecodeError``), the completeness/id validation of
     :func:`parse_verdicts`, and — when ``valid_turn_indices`` is supplied — the
-    turn-citation validation of :func:`verify_turn_citations`.
+    per-claim citation repair of :func:`repair_turn_citations` (or, with
+    ``repair_citations=False``, the strict :func:`verify_turn_citations`).
     """
-    return parse_verdicts(loads_json(text), expected_ids, valid_turn_indices)
+    return parse_verdicts(
+        loads_json(text),
+        expected_ids,
+        valid_turn_indices,
+        repair_citations=repair_citations,
+    )
+
+
+def parse_verdicts_text_detailed(
+    text: str, expected_ids, valid_turn_indices=None, *, repair_citations: bool = True
+) -> ParsedVerdicts:
+    """:func:`parse_verdicts_text`, returning the citation repairs alongside."""
+    return parse_verdicts_detailed(
+        loads_json(text),
+        expected_ids,
+        valid_turn_indices,
+        repair_citations=repair_citations,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -948,14 +1109,16 @@ def judge_coverage(
             )
         try:
             text = _extract_text(response)
-            verdicts = parse_verdicts_text(text, expected_ids, valid_turns)
+            parsed = parse_verdicts_text_detailed(text, expected_ids, valid_turns)
         except VerdictParseError as e:
             # Malformed output (invalid JSON, truncated/short verdict list, an
             # unknown/duplicate/missing claim id, or an unsupported turn
             # citation). Remember it and retry within the bound.
             last_parse_error = e
             continue
-        return _assemble_verdict(verdicts, cfg, doc_id=resolved_doc_id)
+        return _assemble_verdict(
+            parsed.verdicts, cfg, doc_id=resolved_doc_id, repairs=parsed.repairs
+        )
 
     # Bound exhausted with every attempt malformed: re-raise the last typed parse
     # error so the caller sees the specific diagnosis (never a partial verdict).
@@ -964,7 +1127,11 @@ def judge_coverage(
 
 
 def _assemble_verdict(
-    verdicts: list[Verdict], config: JudgeConfig, *, doc_id: str | None = None
+    verdicts: list[Verdict],
+    config: JudgeConfig,
+    *,
+    doc_id: str | None = None,
+    repairs: list[CitationRepair] | None = None,
 ) -> dict:
     """Assemble the final verdict object (verdicts + provenance metadata).
 
@@ -986,6 +1153,9 @@ def _assemble_verdict(
         # COLLIDE across documents, so union_coverage needs this to refuse a
         # cross-document merge. None when the claim payload carried no identity.
         "doc_id": doc_id,
+        # Per-claim citation repairs applied to this set (normally empty). Kept
+        # so a repaired coverage number is auditable rather than silent.
+        "citation_repairs": [r.to_dict() for r in (repairs or [])],
     }
 
 
@@ -1264,26 +1434,120 @@ def _assert_writable(path: str, label: str) -> None:
         raise CLIError(f"{label} file exists and is not writable: {path}")
 
 
-def _cost_record(usage_totals: Any, config: JudgeConfig, calls: int) -> dict:
-    """Assemble the ``--cost-out`` cost-accounting record from the judge result.
+@dataclass
+class UsageTally:
+    """Mutable running tally of model calls + reported token usage.
 
-    Always carries the model used and the number of model calls issued. Token
-    counts are the SUM across every attempt (``usage_totals``), not the last
-    response's — a retry is exactly when spend spikes, so keeping only the final
-    attempt under-reports precisely when the number matters. NO ledger write
-    happens here (the JSON file is the whole cost surface for now).
+    Shared by the CLI and the app wiring so there is ONE implementation of "how
+    many calls did this judge invocation make, and what did they cost". Tokens
+    ACCUMULATE across attempts (a retry is exactly when spend spikes, so keeping
+    only the last response under-reports precisely when the number matters).
+
+    The ``calls_reporting_*`` counters exist for the partial-measurement problem:
+    if only some attempts report usage, the bare sum looks like a complete count,
+    and a field never observed at all would otherwise be emitted as a confident
+    ``0``. :meth:`is_complete` distinguishes a real measurement from an
+    incomplete one, and :func:`_cost_record` OMITS a field no call reported.
+    """
+
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    calls_reporting_input: int = 0
+    calls_reporting_output: int = 0
+
+    def record_response(self, response: Any) -> None:
+        """Fold one model response's ``usage`` block into the tally."""
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        in_tokens = getattr(usage, "input_tokens", None)
+        out_tokens = getattr(usage, "output_tokens", None)
+        # bool is a subclass of int; exclude it as verdict-shape validation does,
+        # so a stray True cannot count as 1 token.
+        if isinstance(in_tokens, int) and not isinstance(in_tokens, bool):
+            self.input_tokens += in_tokens
+            self.calls_reporting_input += 1
+        if isinstance(out_tokens, int) and not isinstance(out_tokens, bool):
+            self.output_tokens += out_tokens
+            self.calls_reporting_output += 1
+
+    def is_complete(self) -> bool:
+        """True iff EVERY call made reported both token counts."""
+        return (
+            self.calls > 0
+            and self.calls_reporting_input == self.calls
+            and self.calls_reporting_output == self.calls
+        )
+
+
+class CountingClient:
+    """Wrap an Anthropic-shaped client, tallying calls + usage into a :class:`UsageTally`.
+
+    Transparent at the one boundary that matters (``messages.create``), so the
+    judge is unaware of it and no key material passes through. Used by the CLI
+    and by the app wiring, which both need the ACTUAL call count — including the
+    calls made by attempts that then failed.
+    """
+
+    def __init__(self, inner: Any, tally: UsageTally | None = None):
+        self._inner = inner
+        self.tally = tally if tally is not None else UsageTally()
+        self.messages = _CountingMessages(self)
+
+    @property
+    def inner(self) -> Any:
+        return self._inner
+
+
+class _CountingMessages:
+    def __init__(self, owner: CountingClient):
+        self._owner = owner
+
+    def create(self, **kwargs):
+        tally = self._owner.tally
+        tally.calls += 1
+        response = self._owner.inner.messages.create(**kwargs)
+        tally.record_response(response)
+        return response
+
+
+def _cost_record(
+    tally: UsageTally,
+    config: JudgeConfig,
+    *,
+    status: str = "ok",
+    error: str | None = None,
+) -> dict:
+    """Assemble the ``--cost-out`` cost-accounting record from a :class:`UsageTally`.
+
+    Always carries the model, the number of model calls issued, and the run's
+    ``status`` — this record is written whether the run SUCCEEDED OR FAILED
+    (a failed run that burned two attempts is exactly when spend spiked, and the
+    previous write-on-success-only behaviour dropped it).
+
+    Token fields are emitted ONLY when at least one call actually reported them,
+    so an unobserved count is absent rather than a confident ``0``, and
+    ``usage_complete`` states whether every call reported usage — a reader can
+    tell an incomplete measurement from a real one. NO ledger write happens here
+    (the JSON file is the whole cost surface for the CLI).
     """
     record: dict[str, Any] = {
         "model": config.model,
-        "calls": calls,
+        "calls": tally.calls,
+        "status": status,
     }
-    if isinstance(usage_totals, dict):
-        in_tokens = usage_totals.get("input_tokens")
-        out_tokens = usage_totals.get("output_tokens")
-        if isinstance(in_tokens, int):
-            record["input_tokens"] = in_tokens
-        if isinstance(out_tokens, int):
-            record["output_tokens"] = out_tokens
+    if tally.calls_reporting_input:
+        record["input_tokens"] = tally.input_tokens
+    if tally.calls_reporting_output:
+        record["output_tokens"] = tally.output_tokens
+    record["usage_complete"] = tally.is_complete()
+    if not record["usage_complete"]:
+        # Name exactly how incomplete, so a partial sum is never read as a total.
+        record["calls_reporting_input_tokens"] = tally.calls_reporting_input
+        record["calls_reporting_output_tokens"] = tally.calls_reporting_output
+    if error is not None:
+        record["error"] = error
     return record
 
 
@@ -1325,58 +1589,45 @@ def run_cli(
     if cost_out_path is not None:
         _assert_writable(cost_out_path, "cost-out")
 
-    # Token usage ACCUMULATED across every attempt (a retry is when spend spikes).
-    usage_totals: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
-    saw_usage = False
     judge_client = client
     if judge_client is None:
         import anthropic  # noqa: PLC0415 - intentional lazy import (no import-time key)
 
         judge_client = anthropic.Anthropic()
 
-    # Wrap the injected/real client so we can observe the last raw response for
-    # cost accounting and the exact call count, without leaking that plumbing
-    # into judge_coverage.
-    counter = {"calls": 0}
+    # Wrap the injected/real client so we observe the exact call count and the
+    # per-attempt token usage, without leaking that plumbing into judge_coverage.
+    counting = CountingClient(judge_client)
 
-    class _CountingClient:
-        def __init__(self, inner):
-            self._inner = inner
-            self.messages = _CountingMessages(inner)
-
-    class _CountingMessages:
-        def __init__(self, inner):
-            self._inner = inner
-
-        def create(self, **kwargs):
-            nonlocal saw_usage
-            counter["calls"] += 1
-            resp = self._inner.messages.create(**kwargs)
-            # Accumulate, never overwrite: every attempt's tokens were billed.
-            usage = getattr(resp, "usage", None)
-            if usage is not None:
-                in_tokens = getattr(usage, "input_tokens", None)
-                out_tokens = getattr(usage, "output_tokens", None)
-                # bool is a subclass of int; exclude it as the verdict-shape
-                # validation does, so a stray True cannot count as 1 token.
-                if isinstance(in_tokens, int) and not isinstance(in_tokens, bool):
-                    usage_totals["input_tokens"] += in_tokens
-                    saw_usage = True
-                if isinstance(out_tokens, int) and not isinstance(out_tokens, bool):
-                    usage_totals["output_tokens"] += out_tokens
-                    saw_usage = True
-            return resp
-
-    verdict = judge_coverage(
-        claims_data, transcript_data, config=cfg, client=_CountingClient(judge_client)
-    )
-    _write_json_file(out_path, verdict)
-
-    if cost_out_path is not None:
-        cost = _cost_record(
-            usage_totals if saw_usage else None, cfg, counter["calls"]
+    # The cost record is written in a `finally`: a run that burned attempts and
+    # THEN failed is exactly when spend spiked, and writing only on success
+    # dropped it — recording spend when it did not spike and losing it when it
+    # did, the inverse of the intent.
+    try:
+        verdict = judge_coverage(
+            claims_data, transcript_data, config=cfg, client=counting
         )
-        _write_json_file(cost_out_path, cost)
+    except Exception as e:
+        if cost_out_path is not None:
+            try:
+                _write_json_file(
+                    cost_out_path,
+                    _cost_record(
+                        counting.tally,
+                        cfg,
+                        status="failed",
+                        error=f"{type(e).__name__}: {e}",
+                    ),
+                )
+            except CLIError:
+                # A failed cost write must not MASK the judge failure that is the
+                # real diagnosis; the original error still propagates.
+                pass
+        raise
+
+    _write_json_file(out_path, verdict)
+    if cost_out_path is not None:
+        _write_json_file(cost_out_path, _cost_record(counting.tally, cfg))
 
     return verdict
 

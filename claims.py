@@ -583,6 +583,18 @@ def _hash_source(document_text: str) -> str:
     return hashlib.sha256(document_text.encode("utf-8")).hexdigest()
 
 
+def source_hash_of(document_text: str) -> str:
+    """Public accessor for the document content hash stamped on a claim sidecar.
+
+    Same value as the private :func:`_hash_source` used by the cache-freshness
+    check — exposed because the coverage sidecar keys its cross-session union on
+    the exact claim map a session was judged against (claim ids are per-document
+    sequentials, so a re-extracted document's ``c15`` is not the old ``c15``).
+    Callers outside this module must not reach into ``_hash_source``.
+    """
+    return _hash_source(document_text)
+
+
 def _claims_path(user_id: str, doc_id: str) -> Path:
     """Sidecar path for ``user_id``'s ``doc_id`` claim set, beside the document.
 

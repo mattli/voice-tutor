@@ -10,6 +10,7 @@ from pathlib import Path
 import anthropic
 
 import claims
+import coverage_store
 import documents
 import identity
 import study_history
@@ -92,6 +93,19 @@ _SESSION_OPENING_DISABLE_VALUES = ("0", "false", "no", "off", "disable", "disabl
 SESSION_OPENING = (
     os.getenv("VOICE_TUTOR_SESSION_OPENING", "").strip().lower()
     not in _SESSION_OPENING_DISABLE_VALUES
+)
+
+# Post-session coverage judging. ON by default: at teardown, a study session's
+# transcript is judged against the document's claim map and a per-session
+# coverage sidecar is written (see coverage_store). It runs OFF the event loop
+# and AFTER the conversation has ended, so it can never touch the voice path.
+# To disable with NO rebuild, set VOICE_TUTOR_COVERAGE_JUDGE to any of these
+# (case-insensitive): 0, false, no, off, disable, disabled. ANY OTHER value —
+# including empty/unset — leaves it ON.
+_COVERAGE_JUDGE_DISABLE_VALUES = ("0", "false", "no", "off", "disable", "disabled")
+COVERAGE_JUDGE = (
+    os.getenv("VOICE_TUTOR_COVERAGE_JUDGE", "").strip().lower()
+    not in _COVERAGE_JUDGE_DISABLE_VALUES
 )
 
 
@@ -752,8 +766,13 @@ async def bot(runner_args):
     # before it finishes, load_fresh_claims returns None and we degrade to plain
     # study mode rather than blocking the pipeline on a 30-60s live extraction.
     study_arg = None
+    # The full claim objects (id + text) are kept for the teardown coverage judge,
+    # which needs the ids; the prompt gets text only. None when the map wasn't
+    # ready at session start — coverage is then skipped, exactly as steering is.
+    study_claims = None
     if study_meta:
         cached = claims.load_fresh_claims(user_id, study_meta["document_id"], study_meta["doc_text"])
+        study_claims = cached
         claim_texts = [c.claim for c in cached] if cached else None
         if claim_texts:
             print(f"[bot] claim map ready: {len(claim_texts)} claims", flush=True)
@@ -855,7 +874,71 @@ async def bot(runner_args):
             "timestamp": message.timestamp,
         })
 
-    def save_transcript():
+    async def run_coverage_judge(transcript: dict):
+        """Judge this session's coverage and write the sidecar + its ledger row.
+
+        Runs at teardown, in the same slot as summary/analysis/recap, but placed
+        FIRST — immediately after the transcript is on disk — because everything
+        it needs exists at that moment and every later teardown step is another
+        chance for the process to die and take coverage with it (the known
+        hard-stop fragility that already loses transcripts and recaps).
+
+        The judge call itself is a blocking 10-40s Haiku request, so it is run in
+        a worker thread: the event loop stays free for any OTHER live session
+        instead of stalling for the length of the call. Nothing here touches the
+        pipeline — the conversation is already over by the time it runs.
+
+        FAILURE CONTRACT: every failure degrades to no coverage data for this
+        session, logged. It must never break the transcript, recap, cost log, or
+        ledger that follow it — hence the blanket except around each half.
+        """
+        if not study_claims:
+            print("[coverage] no claim map for this session; skipping", file=sys.stderr, flush=True)
+            return
+        try:
+            sidecar, cost_row = await asyncio.to_thread(
+                coverage_store.judge_session,
+                user_id=user_id,
+                session_id=study_meta["session_id"],
+                document_id=study_meta["document_id"],
+                source_hash=claims.source_hash_of(study_meta["doc_text"]),
+                claim_objs=study_claims,
+                transcript=transcript,
+            )
+        except Exception as e:  # noqa: BLE001 - coverage never breaks teardown
+            print(f"[coverage] judge raised, skipping coverage: {e}", file=sys.stderr, flush=True)
+            return
+
+        try:
+            if sidecar is not None:
+                path = coverage_store.write_sidecar(
+                    user_id, study_meta["session_id"], sidecar
+                )
+                print(
+                    f"[coverage] wrote {path} — "
+                    f"{sidecar['covered_count']}/{sidecar['claims_total']} claims covered",
+                    file=sys.stderr, flush=True,
+                )
+            else:
+                print(
+                    f"[coverage] judge failed: {cost_row.get('error')}",
+                    file=sys.stderr, flush=True,
+                )
+            # The ledger row is written EITHER WAY: a failed run that burned
+            # attempts is exactly when spend spiked, and recording it only on
+            # success drops the cost precisely when it mattered.
+            cost = (
+                cost_row.get("input_tokens", 0) / 1_000_000 * PRICE_ANTHROPIC_HAIKU_INPUT_PER_MTOK
+                + cost_row.get("output_tokens", 0) / 1_000_000 * PRICE_ANTHROPIC_HAIKU_OUTPUT_PER_MTOK
+            )
+            cost_row["cost_usd"] = round(cost, 4)
+            SESSION_LOG_JSONL_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with SESSION_LOG_JSONL_PATH.open("a") as f:
+                f.write(json.dumps(cost_row) + "\n")
+        except Exception as e:  # noqa: BLE001 - coverage never breaks teardown
+            print(f"[coverage] sidecar/ledger write failed: {e}", file=sys.stderr, flush=True)
+
+    async def save_transcript():
         if not turns:
             return
         user_tx.mkdir(parents=True, exist_ok=True)
@@ -868,6 +951,13 @@ async def bot(runner_args):
             "turns": turns,
         }
         (user_tx / f"{stem}.json").write_text(json.dumps(transcript, indent=2))
+
+        # Coverage first, while the only inputs it needs (transcript + claim map)
+        # are freshly on hand — see run_coverage_judge. Gated on the same
+        # user-turn floor as summary/analysis: a session the user never spoke in
+        # has nothing to judge and should not be billed for a judge call.
+        if study_meta and COVERAGE_JUDGE and has_min_user_turns(turns, MIN_USER_TURNS):
+            await run_coverage_judge(transcript)
 
         summary = usage.summary((session_end - session_start).total_seconds())
 
@@ -1006,7 +1096,7 @@ async def bot(runner_args):
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
-        save_transcript()
+        await save_transcript()
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)

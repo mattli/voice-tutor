@@ -1551,19 +1551,63 @@ def _rf_files(tmp_path):
 
 # --- Finding: citations are never validated against the real transcript ------ #
 
-def test_verdict_citing_a_nonexistent_turn_is_rejected():
+def test_verdict_citing_a_nonexistent_turn_downgrades_only_that_claim():
+    # Supersedes an earlier assertion that this RAISED InvalidTurnCitationError.
+    # That contract threw away every other verdict for one bad index (63 claims
+    # discarded for one miscitation, then a burned retry, then no coverage number
+    # at all). The claim that miscited is downgraded; the rest survive intact.
     payload = _verdicts_json([("c1", True, [999]), ("c2", False, [])])
     client = _ScriptedClient([_RichResponse(payload)])
-    with pytest.raises(cj.InvalidTurnCitationError):
-        cj.judge_coverage(_RF_CLAIMS, _RF_TRANSCRIPT, client=client)
+    verdict = cj.judge_coverage(_RF_CLAIMS, _RF_TRANSCRIPT, client=client)
+    assert verdict["verdicts"][0]["covered"] is False   # downgraded, not credited
+    assert verdict["verdicts"][0]["turns"] == []        # hallucinated index dropped
+    assert verdict["verdicts"][1]["claim_id"] == "c2"   # the other claim survives
+    assert len(client.calls) == 1                       # and no retry was burned
+    repairs = verdict["citation_repairs"]
+    assert repairs == [
+        {"claim_id": "c1", "dropped_turns": [999], "downgraded": True}
+    ]
 
 
-def test_covered_true_with_no_citation_is_rejected():
+def test_a_repair_never_credits_coverage_the_transcript_does_not_support():
+    # The safety property that makes repairing preferable to rejecting: every
+    # repair moves coverage DOWN. A verdict citing one real and one bogus turn
+    # keeps the real citation and stays covered; it can never gain coverage.
+    payload = _verdicts_json([("c1", True, [1, 999]), ("c2", False, [])])
+    client = _ScriptedClient([_RichResponse(payload)])
+    verdict = cj.judge_coverage(_RF_CLAIMS, _RF_TRANSCRIPT, client=client)
+    assert verdict["verdicts"][0]["covered"] is True
+    assert verdict["verdicts"][0]["turns"] == [1]
+    assert verdict["citation_repairs"] == [
+        {"claim_id": "c1", "dropped_turns": [999], "downgraded": False}
+    ]
+
+
+def test_covered_true_with_no_citation_is_downgraded():
     # The v2 prompt's contract: "No citable turn => covered: false and turns: []".
+    # An uncited coverage claim is still refused — now by downgrading that claim
+    # rather than rejecting the whole set.
     payload = _verdicts_json([("c1", True, []), ("c2", False, [])])
     client = _ScriptedClient([_RichResponse(payload)])
+    verdict = cj.judge_coverage(_RF_CLAIMS, _RF_TRANSCRIPT, client=client)
+    assert verdict["verdicts"][0]["covered"] is False
+    assert verdict["citation_repairs"][0]["downgraded"] is True
+
+
+def test_the_strict_citation_checker_is_still_available_and_still_raises():
+    # repair is the DEFAULT, not the only mode: the all-or-nothing contract is
+    # still reachable for callers that want it (and verify_turn_citations itself
+    # is unchanged), so the repair path is a policy choice, not a lost check.
+    verdicts = [cj.Verdict(claim_id="c1", covered=True, turns=[999])]
     with pytest.raises(cj.InvalidTurnCitationError):
-        cj.judge_coverage(_RF_CLAIMS, _RF_TRANSCRIPT, client=client)
+        cj.verify_turn_citations(verdicts, [0, 1])
+    with pytest.raises(cj.InvalidTurnCitationError):
+        cj.parse_verdicts(
+            {"verdicts": [{"claim_id": "c1", "covered": True, "turns": [999]}]},
+            ["c1"],
+            [0, 1],
+            repair_citations=False,
+        )
 
 
 def test_valid_citations_are_accepted():
@@ -1573,14 +1617,17 @@ def test_valid_citations_are_accepted():
     assert verdict["verdicts"][1]["turns"] == []
 
 
-def test_citation_validation_is_a_retryable_parse_error():
-    # A bad citation is model error, not operator error: it must retry within the
-    # bound and then surface the typed diagnosis.
+def test_a_bad_citation_no_longer_burns_a_retry():
+    # Supersedes "citation validation is a retryable parse error". Retrying the
+    # whole call for one bad index doubled the bill and, on a second failure,
+    # left the session with NO coverage number — the outcome the repair exists to
+    # prevent. One call, one downgraded claim, a usable verdict set.
     bad = _verdicts_json([("c1", True, [42]), ("c2", False, [])])
     client = _ScriptedClient([_RichResponse(bad)])
-    with pytest.raises(cj.VerdictParseError):
-        cj.judge_coverage(_RF_CLAIMS, _RF_TRANSCRIPT, client=client)
-    assert len(client.calls) == cj.MAX_JUDGE_ATTEMPTS
+    verdict = cj.judge_coverage(_RF_CLAIMS, _RF_TRANSCRIPT, client=client)
+    assert len(client.calls) == 1
+    assert len(verdict["verdicts"]) == 2
+    assert verdict["verdicts"][0]["covered"] is False
 
 
 # --- Finding: max_tokens truncation undetected, then pointlessly retried ----- #
@@ -1742,6 +1789,78 @@ def test_cost_record_accumulates_tokens_across_a_retry(tmp_path):
     assert record["output_tokens"] == 920
 
 
+# --- Finding: cost was NOT recorded when the run failed ---------------------- #
+
+def test_cost_is_recorded_when_the_run_FAILS(tmp_path):
+    # The inverse of the intent: a run that burned two attempts and then failed
+    # recorded nothing, while a clean single-call run recorded its spend — spend
+    # captured when it did not spike, dropped exactly when it did.
+    cp, tp = _rf_files(tmp_path)
+    out = tmp_path / "out.json"
+    cost = tmp_path / "cost.json"
+    bad = _RichResponse("not json", input_tokens=100, output_tokens=20)
+    client = _ScriptedClient([bad, bad])
+    with pytest.raises(cj.VerdictParseError):
+        cj.run_cli(cp, tp, str(out), cost_out_path=str(cost), client=client)
+    record = json.loads(cost.read_text(encoding="utf-8"))
+    assert record["status"] == "failed"
+    assert record["calls"] == cj.MAX_JUDGE_ATTEMPTS
+    assert record["input_tokens"] == 200, "both failed attempts were billed"
+    assert "error" in record
+    assert not out.exists(), "a failed run must not leave a verdict file"
+
+
+def test_a_successful_run_is_recorded_as_ok(tmp_path):
+    cp, tp = _rf_files(tmp_path)
+    cost = tmp_path / "cost.json"
+    client = _ScriptedClient([_RichResponse(_RF_GOOD, input_tokens=10, output_tokens=5)])
+    cj.run_cli(cp, tp, str(tmp_path / "out.json"), cost_out_path=str(cost), client=client)
+    record = json.loads(cost.read_text(encoding="utf-8"))
+    assert record["status"] == "ok"
+    assert record["usage_complete"] is True
+
+
+# --- Finding: partial token counts printed as if complete -------------------- #
+
+def test_an_unobserved_token_count_is_OMITTED_not_written_as_zero(tmp_path):
+    # Worst case of the old behaviour: a count that was never observed emitted as
+    # a confident 0, indistinguishable from a real measurement of zero.
+    cp, tp = _rf_files(tmp_path)
+    cost = tmp_path / "cost.json"
+    client = _ScriptedClient([_RichResponse(_RF_GOOD)])  # no usage block at all
+    cj.run_cli(cp, tp, str(tmp_path / "out.json"), cost_out_path=str(cost), client=client)
+    record = json.loads(cost.read_text(encoding="utf-8"))
+    assert "input_tokens" not in record
+    assert "output_tokens" not in record
+    assert record["usage_complete"] is False
+
+
+def test_a_PARTIAL_usage_sum_is_labelled_as_incomplete(tmp_path):
+    # One attempt reports usage, the other does not: the sum is real but partial,
+    # and a reader must be able to tell it from a complete measurement.
+    cp, tp = _rf_files(tmp_path)
+    cost = tmp_path / "cost.json"
+    silent = _RichResponse("not json")  # billed, but reports no usage
+    good = _RichResponse(_RF_GOOD, input_tokens=500, output_tokens=900)
+    client = _ScriptedClient([silent, good])
+    cj.run_cli(cp, tp, str(tmp_path / "out.json"), cost_out_path=str(cost), client=client)
+    record = json.loads(cost.read_text(encoding="utf-8"))
+    assert record["calls"] == 2
+    assert record["input_tokens"] == 500
+    assert record["usage_complete"] is False, "2 calls, 1 reporting — not complete"
+    assert record["calls_reporting_input_tokens"] == 1
+
+
+def test_usage_tally_ignores_bool_posing_as_a_token_count():
+    # bool is an int subclass; a stray True must not count as 1 token.
+    tally = cj.UsageTally()
+    tally.calls = 1
+    tally.record_response(_RichResponse("x", input_tokens=True, output_tokens=7))
+    assert tally.input_tokens == 0
+    assert tally.calls_reporting_input == 0
+    assert tally.output_tokens == 7
+
+
 # --- Second-review gaps: behaviours the first fix pass left unpinned --------- #
 # Each of these was a SURVIVING MUTANT — a deliberate break to the fix that the
 # suite failed to catch. They pin the discriminating behaviour, not just the
@@ -1769,29 +1888,63 @@ def test_citations_validate_against_SUPPLIED_indices_not_positional_range():
     ok = _ScriptedClient([_RichResponse(_verdicts_json([("c1", True, [9]), ("c2", False, [])]))])
     verdict = cj.judge_coverage(_RF_CLAIMS, transcript, client=ok)
     assert verdict["verdicts"][0]["turns"] == [9]
-    # Citing 1 (a positional offset, NOT a real index) must FAIL.
+    # Citing 1 (a positional offset, NOT a real index) must be REFUSED — now by
+    # downgrading that claim rather than raising, but still never credited.
     bad = _ScriptedClient([_RichResponse(_verdicts_json([("c1", True, [1]), ("c2", False, [])]))])
-    with pytest.raises(cj.InvalidTurnCitationError):
-        cj.judge_coverage(_RF_CLAIMS, transcript, client=bad)
+    verdict = cj.judge_coverage(_RF_CLAIMS, transcript, client=bad)
+    assert verdict["verdicts"][0]["covered"] is False
+    assert verdict["citation_repairs"][0]["dropped_turns"] == [1]
 
 
 def test_empty_transcript_still_validates_citations():
     # Survived mutant: `if valid_turn_indices:` in place of `is not None`, which
     # silently disables validation for an empty transcript — nothing can be
-    # covered by a session with no turns, so covered:true must still be rejected.
+    # covered by a session with no turns, so covered:true must still be refused
+    # (by downgrade, since the repair path is the default).
     payload = _verdicts_json([("c1", True, [0]), ("c2", False, [])])
     client = _ScriptedClient([_RichResponse(payload)])
-    with pytest.raises(cj.InvalidTurnCitationError):
-        cj.judge_coverage(_RF_CLAIMS, [], client=client)
+    verdict = cj.judge_coverage(_RF_CLAIMS, [], client=client)
+    assert verdict["verdicts"][0]["covered"] is False
+    assert verdict["verdicts"][0]["turns"] == []
 
 
-def test_a_non_string_reason_is_rejected_by_shape_validation():
-    # Survived mutant: deleting the `reason` type check left the suite green.
-    with pytest.raises(cj.VerdictShapeError):
-        cj.parse_verdicts(
-            {"verdicts": [{"claim_id": "c1", "covered": True, "turns": [0], "reason": 5}]},
-            ["c1"],
-        )
+def test_a_non_string_reason_is_coerced_not_rejected():
+    # Supersedes "a non-string reason is rejected by shape validation". The
+    # rationale is AUDITING METADATA; rejecting the set over its type cost the
+    # session its entire coverage number for a harmless model quirk. It is
+    # coerced, and the verdict — the part that matters — is kept.
+    verdicts = cj.parse_verdicts(
+        {"verdicts": [{"claim_id": "c1", "covered": True, "turns": [0], "reason": 5}]},
+        ["c1"],
+    )
+    assert verdicts[0].covered is True
+    assert verdicts[0].reason == "5"
+
+
+def test_a_structured_reason_is_coerced_and_capped():
+    # A model returning the rationale as a list/dict must not fail the run, and a
+    # pathological one must not bloat the sidecar unboundedly.
+    verdicts = cj.parse_verdicts(
+        {"verdicts": [{"claim_id": "c1", "covered": False, "turns": [], "reason": ["a", "b"]}]},
+        ["c1"],
+    )
+    assert isinstance(verdicts[0].reason, str)
+
+    long_reason = "x" * (cj._MAX_REASON_CHARS + 500)
+    capped = cj.parse_verdicts(
+        {"verdicts": [{"claim_id": "c1", "covered": False, "turns": [], "reason": long_reason}]},
+        ["c1"],
+    )
+    assert len(capped[0].reason) < len(long_reason)
+    assert capped[0].reason.endswith("[truncated]")
+
+
+def test_an_omitted_reason_is_still_None_not_the_string_None():
+    # The coercion must not turn "the model omitted it" into a fake rationale.
+    verdicts = cj.parse_verdicts(
+        {"verdicts": [{"claim_id": "c1", "covered": False, "turns": []}]}, ["c1"]
+    )
+    assert verdicts[0].reason is None
 
 
 def test_out_path_that_is_a_directory_is_rejected_before_the_paid_call(tmp_path):
