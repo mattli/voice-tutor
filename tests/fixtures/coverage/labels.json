@@ -1,0 +1,39 @@
+{
+  "experiment": "claim-coverage — Graph Engineering study sessions",
+  "date": "2026-08-03",
+  "doc_key": "matt/2aa66acc-1c4b-4d7d-83fe-b361fbe38523",
+  "claim_map_claims": 63,
+  "judge_prompt_hash": "632b73a34b1a22b1",
+  "judge_prompt_hash_note": "632b73a34b1a22b1 was computed during the 2026-08-02 hand-run over the live Python prompt strings; those bytes are not recoverable from the transcribed judge-prompt-v1.md, so it cannot be reproduced by hashing that file. The verifiable sha256[:16] of judge-prompt-v1.md as published is 038fe74e279842e6. Verified 2026-08-03 (dev-harness run msdsrc8x).",
+  "scope": "PRIMARY union — the 17 claims the judge marked covered by >=1 of the 4 judged primary sessions (f6148c26, 7beee170, d33800bf, bb979045).",
+  "method_note": "Human audit of the judge's PRIMARY-union verdicts against audit-sheet.md. matt_verdict is the ground-truth label; judge_verdict is judge-prompt-v1's call. confidence records how the human verdict was reached: 'familiarity' = single-pass recognition by someone who knows the source doc; 'verified' = checked against the session transcript AND the source document. 16 rows were upheld on a familiarity pass; c30 was rejected after transcript- and source-verification (see its note). Post-audit the covered union drops from 17 to 16 (c30 removed entirely — both of its citations fail).",
+  "labels": [
+    {"claim_id": "c1",  "judge_verdict": "covered", "matt_verdict": "covered",     "confidence": "familiarity"},
+    {"claim_id": "c2",  "judge_verdict": "covered", "matt_verdict": "covered",     "confidence": "familiarity"},
+    {"claim_id": "c3",  "judge_verdict": "covered", "matt_verdict": "covered",     "confidence": "familiarity"},
+    {"claim_id": "c5",  "judge_verdict": "covered", "matt_verdict": "covered",     "confidence": "familiarity"},
+    {"claim_id": "c6",  "judge_verdict": "covered", "matt_verdict": "covered",     "confidence": "familiarity"},
+    {"claim_id": "c8",  "judge_verdict": "covered", "matt_verdict": "covered",     "confidence": "familiarity"},
+    {"claim_id": "c9",  "judge_verdict": "covered", "matt_verdict": "covered",     "confidence": "familiarity"},
+    {"claim_id": "c15", "judge_verdict": "covered", "matt_verdict": "covered",     "confidence": "familiarity"},
+    {"claim_id": "c17", "judge_verdict": "covered", "matt_verdict": "covered",     "confidence": "familiarity"},
+    {"claim_id": "c21", "judge_verdict": "covered", "matt_verdict": "covered",     "confidence": "familiarity"},
+    {"claim_id": "c27", "judge_verdict": "covered", "matt_verdict": "covered",     "confidence": "familiarity"},
+    {"claim_id": "c28", "judge_verdict": "covered", "matt_verdict": "covered",     "confidence": "familiarity"},
+    {"claim_id": "c30", "judge_verdict": "covered", "matt_verdict": "not_covered", "confidence": "verified",
+      "note": "REJECTED. The doc (2aa66acc, source line 86) splits verification three ways as correctness / currency / source-authenticity ('is it correct? Is it current? Is the source real?'); correctness/security/reproducibility appear only as the example lenses of ONE sub-pattern, perspective-diverse verify. The tutor (7beee170 turn 28) taught that inner triad as the headline three-way split — a faithful-sounding conflation — and never named currency or source-authenticity. The second citation (bb979045 turn 2) is the generic kickoff turn and does not deliver the split either. The judge credited it on shape + keyword match over content match. Claim c30 is itself a FAITHFUL extraction (claims.json anchor resolution 'exact', anchor_unresolved false) — this is a JUDGE error, not a bad claim. MANDATORY regression case for any judge-prompt v2: v2 must mark c30 NOT covered."},
+    {"claim_id": "c31", "judge_verdict": "covered", "matt_verdict": "covered",     "confidence": "familiarity"},
+    {"claim_id": "c46", "judge_verdict": "covered", "matt_verdict": "covered",     "confidence": "familiarity"},
+    {"claim_id": "c47", "judge_verdict": "covered", "matt_verdict": "covered",     "confidence": "familiarity"},
+    {"claim_id": "c48", "judge_verdict": "covered", "matt_verdict": "covered",     "confidence": "familiarity"}
+  ],
+  "summary": {
+    "union_pre_audit": 17,
+    "union_post_audit": 16,
+    "rows_upheld": 16,
+    "rows_rejected": 1,
+    "rejected_claim_ids": ["c30"],
+    "post_audit_coverage_pct_over_63": 25.4,
+    "tutor_recap_estimate_pct": 40
+  }
+}

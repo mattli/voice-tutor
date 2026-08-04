@@ -1,0 +1,644 @@
+{
+  "source_hash": "1019fa8a190e8418c9c313ac4a36a358b2c37f981fe49612d483a86f8204458d",
+  "claims": [
+    {
+      "id": "c1",
+      "claim": "Graph engineering organizes AI work as nodes (bounded tasks) and edges (real data dependencies), enabling parallel execution wherever tasks are independent.",
+      "anchor": "Graph engineering organizes AI work as nodes (bounded tasks) and edges (real data dependencies), enabling parallel execution wherever tasks are independent.",
+      "anchor_start": 86,
+      "anchor_end": 242,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c2",
+      "claim": "The core skill of graph engineering is the fake-edge test — identifying sequential steps that don't actually depend on each other.",
+      "anchor": "The core skill is the \"fake-edge test\" — identifying sequential steps that don't actually depend on each other",
+      "anchor_start": 243,
+      "anchor_end": 353,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c3",
+      "claim": "The core pattern of graph engineering is the diamond: fan-out, reduce, synthesize.",
+      "anchor": "the core pattern is the diamond (fan-out, reduce, synthesize)",
+      "anchor_start": 360,
+      "anchor_end": 421,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c4",
+      "claim": "Graph engineering buys breadth and speed, not better judgment, and a graph is only as honest as its anchors — outputs verified against reality, not against other model outputs.",
+      "anchor": "It buys breadth and speed, not better judgment; a graph is only as honest as its anchors — outputs verified against reality, not against other model outputs.",
+      "anchor_start": 423,
+      "anchor_end": 580,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c5",
+      "claim": "A loop is one agent improving one thing on repeat (try, check, adjust, repeat), while a graph is a network of loops where cycles watch and correct each other instead of one agent chasing one metric.",
+      "anchor": "A loop is one agent improving one thing on repeat — try, check, adjust, repeat. A graph is a network of loops where cycles watch and correct each other instead of a single agent chasing a single metric.",
+      "anchor_start": 2776,
+      "anchor_end": 2978,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c6",
+      "claim": "The dependency-graph concept has a traceable lineage: the US Navy used critical-path charts for the Polaris missile in 1957, make -j parallelized builds by 1976, MapReduce brought it to the data center in 2004, and Airflow used it in daily pipelines by 2014.",
+      "anchor": "the US Navy laid out the same critical-path chart to schedule the Polaris missile in 1957, `make -j` built code in parallel by 1976, MapReduce carried it into the data center in 2004, and Airflow wired it into daily pipelines by 2014",
+      "anchor_start": 3043,
+      "anchor_end": 3276,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c7",
+      "claim": "Graph engineering is a decades-old computer science concept (DAGs, dataflow programming) under a new name; LangGraph shipped this model in January 2024, Microsoft's AutoGen has GraphFlow, and Google built ADK 2.0's workflow runtime on the same idea.",
+      "anchor": "LangGraph shipped this exact model — nodes and edges over shared state — in January 2024; Microsoft's AutoGen has GraphFlow; Google built ADK 2.0's workflow runtime on the same idea.",
+      "anchor_start": 3570,
+      "anchor_end": 3752,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c8",
+      "claim": "The AI engineering stack layers wrap each other in order: prompt engineering, context engineering, harness engineering, loop engineering, then graph engineering, and skipping a lower layer causes the graph to fail in a more elaborate way.",
+      "anchor": "prompt engineering (the words you send) → context engineering (everything the model sees) → harness engineering (the code around the model) → loop engineering (the autonomous cycle driving one agent toward a goal) → graph engineering (the coordination layer across many loops). Skip a lower layer and the graph just fails in a more elaborate way.",
+      "anchor_start": null,
+      "anchor_end": null,
+      "anchor_unresolved": true,
+      "resolution": "unresolved"
+    },
+    {
+      "id": "c9",
+      "claim": "A single agent loop is just a one-node graph with an edge pointing back to itself; graphs don't replace loops, they connect and govern them.",
+      "anchor": "A single agent loop is just a one-node graph with an edge pointing back to itself — graphs don't replace loops, they connect and govern them.",
+      "anchor_start": 4439,
+      "anchor_end": 4580,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c10",
+      "claim": "A node is one bounded task with a defined input and output, and an edge is a real data dependency; if no data passes along the arrow, the edge is fake and the wait is wasted.",
+      "anchor": "a **node** is one bounded task with a defined input and output. An **edge** is a real data dependency — one node needs what another produced, so it waits. If no data passes along the arrow, the edge is fake and the wait is wasted.",
+      "anchor_start": 4609,
+      "anchor_end": 4839,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c11",
+      "claim": "A node earns its place only if it represents a real specialty (different model, toolset, or separate role); two simple tests are whether the graph can be drawn on a napkin, and whether collapsing two nodes loses nothing.",
+      "anchor": "Two filters: if you can't draw the graph on a napkin, it's too complex; if collapsing two nodes into one loses nothing, they were never two nodes.",
+      "anchor_start": 5061,
+      "anchor_end": 5207,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c12",
+      "claim": "The most common graph-design failure mode is turning a simple task like \"summarize this PDF\" into an overly complex five-node graph.",
+      "anchor": "The most common failure mode is turning \"summarize this PDF\" into a five-node graph with a fetcher, a chunker, a summarizer, a reviewer, and a formatter.",
+      "anchor_start": 5208,
+      "anchor_end": 5361,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c13",
+      "claim": "Nodes and edges should carry contracts: a node contract enforces bounded input/output and one job via schema, while an edge contract names the data shape crossing it, allowing nodes to be swapped without breaking the graph.",
+      "anchor": "A node contract means bounded input, bounded output, exactly one job — enforced with a schema so the next node can consume structured data without guessing. An edge contract names the data shape that crosses it, not just the order.",
+      "anchor_start": 5395,
+      "anchor_end": 5626,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c14",
+      "claim": "Edge operations like flatten, dedupe, and filter are code, not conversation, and cost zero tokens, even though people often burn model tokens performing them.",
+      "anchor": "a huge amount of what people burn model tokens on is really an edge operation (flatten, dedupe, filter) — and edges are code, not conversation. They cost zero tokens.",
+      "anchor_start": 5853,
+      "anchor_end": 6019,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c15",
+      "claim": "State hygiene in graphs requires a typed schema for shared state, explicit write permissions per node, and checkpointing between nodes to enable replay; nodes with external side effects must be idempotent because replay re-executes nodes after a checkpoint.",
+      "anchor": "Give the shared state a typed schema. Decide explicitly which nodes may write to which fields. Checkpoint state between nodes so you can replay a run and see exactly where it went bad — but beware: nodes after a checkpoint execute again, so any node with external side effects (sending an email, creating a record) must be idempotent.",
+      "anchor_start": 6058,
+      "anchor_end": 6392,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c16",
+      "claim": "Anthropic's governing principle is to fix the process that produced the code, not the code itself — repeated failures should be addressed by updating rules and regenerating, not by hand-patching individual outputs.",
+      "anchor": "Anthropic states the governing principle in a single line: **you do not fix the code, you fix the process that produced the code.** When a reviewer catches the same mistake in the third file, the wrong move is to fix three files. The right move is to add one sentence to the rules and regenerate the batch.",
+      "anchor_start": 6428,
+      "anchor_end": 6734,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c17",
+      "claim": "A loop hides the critical 'what runs next' decision inside a black box, making it invisible and unauditable, whereas a graph makes that decision explicit and inspectable before the run starts.",
+      "anchor": "A [loop](loop-engineering.md) hides one critical decision inside a black box: *what runs next*. Every time a loop agent decides whether to retry, escalate, or move on, that decision happens inside the model's own reasoning — invisible to you, unauditable after the fact... A graph makes that same decision explicit, written down, inspectable before the run even starts.",
+      "anchor_start": null,
+      "anchor_end": null,
+      "anchor_unresolved": true,
+      "resolution": "unresolved"
+    },
+    {
+      "id": "c18",
+      "claim": "An April 2026 arXiv paper formalized the auditability argument around three commitments, but the paper's author disclaims that this is an unimplemented design and whether it delivers benefits in practice is an open empirical question.",
+      "anchor": "An April 2026 arXiv paper formalized this argument around three commitments that every auditable graph rests on. The paper's own author includes a fairness disclaimer: this is an unimplemented design, and whether it delivers its promised benefits in practice remains an open empirical question.",
+      "anchor_start": 7991,
+      "anchor_end": 8285,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c19",
+      "claim": "Commitment 1, Immutable Plan, requires that the execution plan be locked once generated and not shift mid-run, trading flexibility for inspectability.",
+      "anchor": "**Commitment 1: Immutable Plan.** The execution plan cannot shift mid-run. Once generated and locked, it exists as one fixed version for the duration of the run... Locking the plan trades flexibility for inspectability",
+      "anchor_start": null,
+      "anchor_end": null,
+      "anchor_unresolved": true,
+      "resolution": "unresolved"
+    },
+    {
+      "id": "c20",
+      "claim": "Commitment 2, Separated Layers, requires planning, execution, and recovery to live in three independent layers, mirroring the Builder/Judge separation principle where the role producing work should not evaluate it.",
+      "anchor": "**Commitment 2: Separated Layers.** Planning, execution, and recovery live in three independent layers. The planning layer produces the immutable plan and does nothing else. The execution layer runs steps and reports outcomes (pass/fail with evidence), never deciding what happens on failure. The recovery layer receives failure reports and applies a defined protocol, never executing new work directly.",
+      "anchor_start": 8955,
+      "anchor_end": 9358,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c21",
+      "claim": "Commitment 3, Strict Escalation, requires recovery to follow a fixed protocol with a defined attempt limit that hands control to a human rather than retrying indefinitely; the paper found many real-world loop implementations lack formal bounds on recovery attempts.",
+      "anchor": "**Commitment 3: Strict Escalation.** Recovery follows a fixed protocol instead of retrying indefinitely. The protocol defines, in advance, how many recovery attempts are permitted, what counts as success or failure for each, and exactly what happens when the limit is reached — handing control to a human, not attempting one more creative variation. The paper's analysis across 70 real-world systems found that a large share of loop implementations had no formal bounds on recovery attempts at all.",
+      "anchor_start": 9548,
+      "anchor_end": 10046,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c22",
+      "claim": "Each turn through a commitment-based graph follows five named, inspectable states: Plan, Execute, Recover, Escalate, and Repeat.",
+      "anchor": "Each turn through a commitment-based graph follows five named, inspectable states: **Plan** (decompose the task into a defined sequence), **Execute** (do the work for the current step), **Recover** (follow a defined protocol when execution fails), **Escalate** (hand control to a human at the defined limit), **Repeat** (move to the next step).",
+      "anchor_start": 10072,
+      "anchor_end": 10416,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c23",
+      "claim": "Each of the three commitments can be tested for sloppy implementation, such as confirming escalation occurs rather than silent adaptation, checking that failure reports contain no forward-looking decisions, and confirming clean escalation at the defined recovery limit.",
+      "anchor": "To test immutable plan: construct a mid-run scenario where the \"obviously correct\" next step would deviate from the locked plan — confirm the system escalates rather than silently adapting. To test separated layers: check whether the execution layer's failure reports contain any decision about what should happen next... To test strict escalation: feed the system a failure that neither defined recovery attempt can fix and confirm it escalates cleanly at the defined limit",
+      "anchor_start": null,
+      "anchor_end": null,
+      "anchor_unresolved": true,
+      "resolution": "unresolved"
+    },
+    {
+      "id": "c24",
+      "claim": "Tracking the rate at which runs reach the Escalated state, broken down by which recovery step failed, reveals miscalibrated protocols rather than uniformly hard tasks.",
+      "anchor": "Track one metric over real usage: the rate at which runs reach the Escalated state, broken down by which specific recovery step failed. A graph escalating constantly at the same step tells you that step's protocol is miscalibrated, not that the task is uniformly hard.",
+      "anchor_start": 11259,
+      "anchor_end": 11527,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c25",
+      "claim": "The fake-edge test asks, at each workflow step, whether it actually needs the result of the step before it; most workflows have two or three fake edges that only run sequentially because of typing order, not data dependency.",
+      "anchor": "walk your current workflow step by step and at each step ask — *does this step actually need the result of the one before it?*... Most workflows have two or three fake edges — sequential steps that only run in order because that's the order they were typed, not because of any data dependency.",
+      "anchor_start": null,
+      "anchor_end": null,
+      "anchor_unresolved": true,
+      "resolution": "unresolved"
+    },
+    {
+      "id": "c26",
+      "claim": "A linear 40-step workflow has 40 points of sequential failure and summed latency, while the same tasks as a graph execute at the speed of the slowest layer rather than the sum of everything.",
+      "anchor": "A linear workflow with 40 steps has 40 points of sequential failure and the latency of all 40 summed. The same 40 tasks drawn as a graph execute at the speed of the slowest layer, not the sum of everything.",
+      "anchor_start": 11971,
+      "anchor_end": 12177,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c27",
+      "claim": "The diamond pattern — fan out, reduce, synthesize — is the dominant graph shape in production agent systems, exemplified by Claude's research feature where a lead plans angles, workers gather in parallel, findings get checked, and one report reaches the user.",
+      "anchor": "The dominant graph shape in production agent systems: **fan-out, reduce, synthesize.**... Claude's research feature runs exactly this: a lead plans angles, workers gather in parallel, findings get checked, and one report reaches the user.",
+      "anchor_start": null,
+      "anchor_end": null,
+      "anchor_unresolved": true,
+      "resolution": "unresolved"
+    },
+    {
+      "id": "c28",
+      "claim": "In fan-out implementation, the parallel barrier should wait for every worker before returning, and a worker that throws should resolve to null instead of rejecting the whole batch, filtering out nulls before merging.",
+      "anchor": "First, the parallel barrier waits for every worker before returning, so the next stage sees the complete set. Second, a worker that throws resolves to null instead of rejecting the whole batch — one flaky agent can't sink the run. Always filter out nulls before the merge step.",
+      "anchor_start": 12870,
+      "anchor_end": 13147,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c29",
+      "claim": "A barrier should be used only when a stage genuinely needs every prior result together (like deduping across sources); if there's no cross-item dependency, use a pipeline instead of a barrier.",
+      "anchor": "**use a barrier only when a stage genuinely needs every prior result together** — deduping across sources needs a barrier, but flattening a list is just an edge. If you wrote fan-out → transform → fan-out and that middle transform has no cross-item dependency, you should have used a pipeline and skipped the barrier entirely.",
+      "anchor_start": 13166,
+      "anchor_end": 13492,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c30",
+      "claim": "Cost-conscious diamond design uses cheap models on boring nodes and reserves the strong model for nodes where judgment matters.",
+      "anchor": "Cost-conscious design: use cheap models on boring nodes and the strong model only where judgment matters.",
+      "anchor_start": 13494,
+      "anchor_end": 13599,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c31",
+      "claim": "Three concrete business applications of the diamond pattern — deep research desk, SEO content machine, and go-to-market kit — each fan out parallel researchers, run a verify/skeptic pass, synthesize into a deliverable, and require a human gate before shipping.",
+      "anchor": "Three concrete business applications of the diamond pattern, each following the same skeleton: fan-out parallel researchers → verify/skeptic pass → synthesize into one deliverable → human gate before anything ships.",
+      "anchor_start": 14047,
+      "anchor_end": 14262,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c32",
+      "claim": "In the deep research desk build, five researchers work distinct angles in parallel, findings require a source and date, and a skeptic node attacks every finding so only survivors reach the final report ranked by confidence.",
+      "anchor": "A business question (pricing, market entry, offer comparison) fans out to five researchers working distinct angles in parallel. Each finding requires a source link and date. A skeptic node attacks every finding, trying to disprove it — only survivors reach the final report, ranked by confidence.",
+      "anchor_start": 14288,
+      "anchor_end": 14584,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c33",
+      "claim": "In the SEO content machine build, three parallel researchers feed an outline, a writer drafts from it, and a fact-checker flags unsupported claims, with nothing publishing without human review.",
+      "anchor": "Three parallel researchers cover what top-ranking pages include, what real questions people ask, and what everyone misses. Their outputs merge into an outline, a writer drafts from the outline, and a fact-checker flags every claim without a source... nothing publishes without human review.",
+      "anchor_start": null,
+      "anchor_end": null,
+      "anchor_unresolved": true,
+      "resolution": "unresolved"
+    },
+    {
+      "id": "c34",
+      "claim": "In the go-to-market kit build, three researchers profile the buyer, map channels, and gather competitor positioning in parallel, merging into a positioning document that pauses for human approval before three writers draft copy in parallel, checked against the positioning doc.",
+      "anchor": "Three researchers profile the buyer (in their own words), map their channels, and collect competitor positioning — all in parallel. Their work merges into a one-page positioning document, and the graph pauses for human approval of that positioning before proceeding. Then three writers draft landing copy, launch posts, and outreach messages in parallel from the approved positioning.",
+      "anchor_start": 15065,
+      "anchor_end": 15449,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c35",
+      "claim": "Models are poor at grading their own work: GPT-4 recognizes its own writing 73.5% of the time and this self-recognition causally biases it to prefer its own text (Panickssery, NeurIPS 2024), and models score their own answers higher in lineups — GPT-4 by 10%, Claude by 25% (Zheng, NeurIPS 2023).",
+      "anchor": "GPT-4 recognizes its own writing 73.5% of the time, and that self-recognition causally drives it to prefer the very text it wrote (Panickssery, NeurIPS 2024). Grade a lineup of answers and a model scores its own higher: GPT-4 by 10%, Claude by 25% (Zheng, NeurIPS 2023).",
+      "anchor_start": 16112,
+      "anchor_end": 16382,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c36",
+      "claim": "The rule in verification is to never let the agent that did the work check the work; a separate verifier node should be placed on the edge whose only job is to try to kill the finding before it moves on.",
+      "anchor": "The rule: **never let the agent that did the work check the work.** Place a separate verifier node on the edge. Its only job is to try to kill the finding before it moves on.",
+      "anchor_start": 16473,
+      "anchor_end": 16647,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c37",
+      "claim": "A verifier needs a clean context; giving it the same conversation the worker had makes it nod along rather than check, effectively turning a graph of agents sharing one context into a single loop in a costume.",
+      "anchor": "Critical requirement: the verifier needs a **clean context**. Give it the same conversation the worker had and it's not checking anything — it's nodding along to itself in a different font. A graph of agents sharing one context is just a single [loop](loop-engineering.md) in a costume.",
+      "anchor_start": 16649,
+      "anchor_end": 16935,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c38",
+      "claim": "Cognition's read-many/write-one pattern, learned from running Devin, allows several agents to read and weigh in but restricts writing/changing anything to only one agent, because reading is safe to parallelize while writing is where damage happens.",
+      "anchor": "Cognition landed in the same place after a year of running Devin: several agents may read and weigh in, but only one agent is ever allowed to change anything. Reading is safe to parallelize because a bad opinion costs nothing until someone acts on it. Writing is where damage happens, so you keep it in one place where you can see it.",
+      "anchor_start": 16937,
+      "anchor_end": 17271,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c39",
+      "claim": "Verification can be split into three named patterns: adversarial verify (independent skeptics refute each finding, majority survives), perspective-diverse verify (distinct lenses like correctness/security/reproducibility), and judge panel (parallel judges score multiple attempts and synthesize from the winner plus best of runners-up).",
+      "anchor": "Three named patterns: **adversarial verify** (spawn N independent skeptics prompted to refute each finding; keep only what a majority survives), **perspective-diverse verify** (give each verifier a distinct lens — correctness, security, reproducibility — because diversity catches failure modes that N identical checks never will), and **judge panel** (generate N attempts from different angles, score with parallel judges, synthesize from the winner while grafting the best of the runners-up).",
+      "anchor_start": 17414,
+      "anchor_end": 17908,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c40",
+      "claim": "The human gate rule is to place approval where a mistake would be expensive to undo, not on every step, since gating everything creates a bottleneck while gating nothing leaves irreversible actions unwatched.",
+      "anchor": "The rule: **put your approval where a mistake would be expensive to undo, not on every step.** A gate on everything makes you the bottleneck and defeats the graph's purpose of running wide without you. A gate on nothing means nobody is watching when the send, the publish, the refund, or the invoice fires.",
+      "anchor_start": 18066,
+      "anchor_end": 18372,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c41",
+      "claim": "Klarna publicly demonstrated the human-gate lesson: it went all-in on AI customer support, admitted the cost cutting went too far, and brought human service back as a premium tier.",
+      "anchor": "Even Klarna learned this in public: they went all-in on AI customer support, admitted the cost cutting went too far, and brought human service back as the premium tier.",
+      "anchor_start": 18507,
+      "anchor_end": 18675,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c42",
+      "claim": "Four safety rules keep graphs from becoming expensive accidents: every loop has a maximum number of rounds, only one job writes to any one file, routing lives in written steps while AI fills the jobs, and there's a cap on how many agents can spawn.",
+      "anchor": "Four safety rules keep graphs from becoming expensive accidents: every loop gets a maximum number of rounds, only one job writes to any one file, the routing lives in written steps while the AI fills the jobs, and there is always a cap on how many agents can spawn.",
+      "anchor_start": 18767,
+      "anchor_end": 19032,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c43",
+      "claim": "Anthropic's build methodology starts with building the judge first: deciding a machine-checkable pass/fail criterion for the work before writing instructions about the work itself.",
+      "anchor": "Before writing a single instruction about the work itself, decide how a machine tells you the work is correct... You have a judge when you can answer this without opening the output: *what command tells me this passed?*",
+      "anchor_start": null,
+      "anchor_end": null,
+      "anchor_unresolved": true,
+      "resolution": "unresolved"
+    },
+    {
+      "id": "c44",
+      "claim": "The judge must be validated in both directions by running it against a known-good input and a deliberately broken copy before generating anything at scale.",
+      "anchor": "Run it against a known-good input (should pass) and a deliberately broken copy (should fail). If the broken copy passes, every green result after this point is meaningless.",
+      "anchor_start": 20013,
+      "anchor_end": 20185,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c45",
+      "claim": "A rulebook.md document should be grown from ambiguities discussed with the model and never bypassed by hand-editing output, since doing so creates two conflicting sources of truth.",
+      "anchor": "Build it by talking through ambiguities with the model — every time you think \"well, in that case it should probably…\" that's a rule. Two properties make it work: it grows (every reviewer catch that the rules didn't cover becomes a new sentence), and nothing bypasses it",
+      "anchor_start": 20365,
+      "anchor_end": 20635,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c46",
+      "claim": "Jarred Sumner built a rulebook with Claude and ran eight subagents dedicated to reviewing for eight specific failure categories he expected from experience.",
+      "anchor": "Jarred Sumner worked through each area of ambiguity with Claude, then ran eight subagents whose only job was reviewing for eight specific failure categories he expected from experience.",
+      "anchor_start": 20779,
+      "anchor_end": 20964,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c47",
+      "claim": "Stress-testing the rulebook means running three items two ways (with and without the rulebook), diffing them, fixing the rulebook rather than the files, and then deleting all pilot output so it doesn't create an inconsistent convention.",
+      "anchor": "Run three items two different ways — with and without the rulebook. Diff them. Every difference is a place where the rules are wrong, missing, or worse than the model's default. Fix the rulebook, not the files. Then delete everything produced.",
+      "anchor_start": 21023,
+      "anchor_end": 21266,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c48",
+      "claim": "State should live on disk, not in the context window: a queue script rebuilds the work queue from the filesystem each run, making the process resumable by construction even if killed partway through.",
+      "anchor": "A queue script rebuilds the work queue from the filesystem every run — checking which output files exist to determine what's done. Nothing about progress lives in a conversation. The consequence: the process is resumable by construction. Kill it at 60%, restart, and it picks up at 60% because the disk remembers.",
+      "anchor_start": 21525,
+      "anchor_end": 21838,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c49",
+      "claim": "Two independent reviewers should run in fresh sessions with clean context, seeing only the output and rulebook, and every finding should require a rule citation, since disagreement between reviewers usually signals rulebook ambiguity.",
+      "anchor": "Run two fresh sessions per item, each seeing only the output and the rulebook, nothing else. No worker reasoning, no chat history... Force a rule citation on every finding... Disagreement between the two reviewers usually means the rulebook is ambiguous at that spot.",
+      "anchor_start": null,
+      "anchor_end": null,
+      "anchor_unresolved": true,
+      "resolution": "unresolved"
+    },
+    {
+      "id": "c50",
+      "claim": "Checks should be placed by cost: fast checks belong inside the loop (Mike Krieger ran the TypeScript compiler on every unit) while slow checks belong outside in batches (Jarred Sumner banned the Rust compiler from the loop and ran cargo once across the workspace).",
+      "anchor": "**Fast checks go inside the loop:** Mike Krieger ran the TypeScript compiler on every unit because it returns in seconds. **Slow checks go outside, in batches:** Jarred Sumner banned the Rust compiler from the loop because `cargo` takes minutes — he ran it once across the workspace, then dispatched fixer agents against the error list in parallel.",
+      "anchor_start": 22653,
+      "anchor_end": 23001,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c51",
+      "claim": "Expensive operations that every agent might trigger should be serialized through a single daemon that batches requests and runs once, as in Anthropic's build daemon that is the only process allowed to rebuild the binary.",
+      "anchor": "Agents write requests to a directory; a single daemon owns the operation, batches requests, runs once, and feeds results back. Anthropic's version is a build daemon — the only process allowed to rebuild the binary.",
+      "anchor_start": 23460,
+      "anchor_end": 23674,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c52",
+      "claim": "Model selection should use cheap, fast models for the main transformation work and reserve the strongest model for reviewers and rule-writing, since bad rules propagate into every downstream output; Mike Krieger used twelve Sonnet subagents for migration and a larger model for review.",
+      "anchor": "Use cheap, fast models for workers doing the main transformation. Save the strong model for reviewers and anything that writes rules other agents will follow — a bad rule propagates into every downstream output... Mike Krieger fanned out twelve subagents on Sonnet for the main migration, reserving the larger model for review.",
+      "anchor_start": null,
+      "anchor_end": null,
+      "anchor_unresolved": true,
+      "resolution": "unresolved"
+    },
+    {
+      "id": "c53",
+      "claim": "Context collapse occurs when fanning out many nodes and feeding all outputs into one final step overflows the context window; the fix is to layer fan-in by batching and summarizing before combining.",
+      "anchor": "Fan out a thousand nodes, then feed all outputs into one final step — you blow past the context window before synthesis starts. Fix: layer your fan-in. Batch results, summarize each batch, then combine summaries, never the raw pile.",
+      "anchor_start": 24264,
+      "anchor_end": 24496,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c54",
+      "claim": "False independence occurs when nodes appear independent in their prompts but share a hidden edge, such as writing to the same file or hitting the same rate-limited API; Bun's team hit this when many agents shared one workspace and overwrote each other, fixed by giving each worker isolated git worktrees.",
+      "anchor": "Two nodes look independent because their prompts never mention each other, but they both write to the same file or hit the same rate-limited API. That's a hidden edge. When Bun's team first fanned a big job across many agents, they shared one workspace and overwrote each other. Fix: give every worker its own isolated space — in practice, each agent runs in its own git worktree, does its work in a sandbox, and merges cleanly.",
+      "anchor_start": 24522,
+      "anchor_end": 24950,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c55",
+      "claim": "Silent node failure happens when one dead node among many slips unnoticed into a seemingly complete report; the fix is having every merge step count inputs against the expected number and flag gaps.",
+      "anchor": "In a graph, one dead node among two hundred can slip into a report that looks complete. Fix: every merge step counts its inputs against the number expected and flags the gap instead of quietly running on half the data.",
+      "anchor_start": 25201,
+      "anchor_end": 25419,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c56",
+      "claim": "Conditional routing uses a router node whose decision can be model-powered but whose routing execution is deterministic code, giving model judgment at the node and script reliability at the edge.",
+      "anchor": "Determinism becomes a feature here: the router's *decision* can be Claude-powered (a subagent classifies), but the *routing* is code the model wrote — so it runs the same way every time for the same classification.",
+      "anchor_start": 25695,
+      "anchor_end": 25909,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c57",
+      "claim": "Controlled cycles are needed for unknown-size discovery work; the loop-until-dry pattern keeps spawning finders until K consecutive rounds surface nothing new, deduping against everything seen (not just confirmed results) to avoid an infinite loop.",
+      "anchor": "The pattern that converges is **loop-until-dry:** keep spawning finders until K consecutive rounds surface nothing new, then stop. The critical detail: dedupe against everything *seen*, not just against confirmed results. Otherwise rejected findings reappear every round, the loop never runs dry",
+      "anchor_start": 26451,
+      "anchor_end": 26746,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c58",
+      "claim": "Pipeline execution should be the default over parallel barriers, since a pipeline streams items independently through stages so fast items finish early, while a barrier should only be used when a stage truly needs every prior result at once.",
+      "anchor": "**Default to pipeline.** Reach for a barrier only when a stage truly needs every prior result at once — a cross-set dedupe, an early-exit on the total, a prompt that compares against \"the other findings.\" \"It's cleaner code\" and \"the stages feel separate\" are not reasons; barrier latency is real, measurable, wasted time.",
+      "anchor_start": 27172,
+      "anchor_end": 27494,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c59",
+      "claim": "Self-routing dynamic workflows let the model write its own orchestration script for jobs that can't be planned in advance, decomposing the task and spawning a coordinated fleet, and good runs can be saved as version-controlled, re-runnable scripts.",
+      "anchor": "With dynamic workflows, you describe the objective and the model writes the orchestration script itself — decomposing the task, choosing the fan-out, spawning a coordinated fleet of subagents, and synthesizing the result... When a run is good, save its script — version-controlled, re-runnable by name",
+      "anchor_start": null,
+      "anchor_end": null,
+      "anchor_unresolved": true,
+      "resolution": "unresolved"
+    },
+    {
+      "id": "c60",
+      "claim": "A graph should be skipped when the task is small or isolated, when you want to approve every step, when you don't know what you're looking for, or when steps genuinely depend on each other sequentially.",
+      "anchor": "**The task is small or isolated.** Adding one function, fixing one bug — coordination is pure overhead.\n- **You want to approve every step.** A graph's point is running wide without you; a tight leash defeats the purpose.\n- **You don't know what you're looking for.** Exploratory work wants one steerable agent, not a fleet locked into a plan.\n- **Steps genuinely depend on each other.** Forcing a graph onto truly sequential work adds cost for zero speedup.",
+      "anchor_start": 28395,
+      "anchor_end": 28853,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c61",
+      "claim": "The middle-path approach is to run a loop first to learn the shape of the work and turn correction notes into a rulebook, then build the graph for the second run once the same shape of work repeats hundreds of times.",
+      "anchor": "run a [loop](loop-engineering.md) first to learn the shape of the work, keeping notes on every correction you make. Those notes become your first rulebook. Then build the graph for the second run. The graph earns its setup cost when the same shape of work repeats hundreds of times and a machine can tell right from wrong.",
+      "anchor_start": 29001,
+      "anchor_end": 29323,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c62",
+      "claim": "Choosing between a loop and a graph is a genuine tradeoff between adaptiveness and auditability, not a maturity ladder: loops suit genuinely exploratory work, while graphs suit tasks with enumerable failure modes, expensive unbounded retries, or a need for inspection by reviewers.",
+      "anchor": "The two patterns are not mutually exclusive, and choosing between them is a genuine tradeoff, not a maturity ladder. Reach for a loop when the task is genuinely exploratory... Reach for a graph when failure modes are enumerable in advance, when unbounded retry cycles would be expensive, and when a reviewer... needs to inspect what the system was capable of doing",
+      "anchor_start": null,
+      "anchor_end": null,
+      "anchor_unresolved": true,
+      "resolution": "unresolved"
+    },
+    {
+      "id": "c63",
+      "claim": "A common pragmatic design nests a loop inside a single Execute state of an outer graph, applying auditability at the level where it matters most and adaptiveness at the level where improvisation is valuable.",
+      "anchor": "A common pragmatic design uses a graph at the outer level for overall task structure and stop conditions, while allowing a [loop](loop-engineering.md) to run inside a single Execute state for the genuinely exploratory sub-task of figuring out how to implement one bounded step.",
+      "anchor_start": 30273,
+      "anchor_end": 30550,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c64",
+      "claim": "Amdahl's law gives a speedup ceiling: N agents buy at most 1/((1-p)+p/N) speedup where p is the parallelizable fraction; at 95% parallel, sixteen agents yield roughly 9x and even 256 agents only reach about 18.6x.",
+      "anchor": "if a fraction *p* of the work is parallelizable and the rest is serial (the final merge, the verify, every real edge), then *N* agents buy you at most 1 / ((1 − p) + p/N) speedup. At 95% parallel, sixteen agents buy roughly 9× — not 16×... even 256 agents at 95% parallel only reach ~18.6×.",
+      "anchor_start": null,
+      "anchor_end": null,
+      "anchor_unresolved": true,
+      "resolution": "unresolved"
+    },
+    {
+      "id": "c65",
+      "claim": "The critical path from the fake-edge test sets the floor on completion time, the serial fraction sets the speedup cap, and counting independent nodes via the fake-edge test estimates p before running any agents.",
+      "anchor": "The critical path from the fake-edge test is the floor (the fastest the work can ever finish). The serial fraction is the cap. And the \"and then\" test from the fake-edge step is exactly how you estimate *p*: count the independent nodes, and you have your number before a single agent runs.",
+      "anchor_start": 31179,
+      "anchor_end": 31468,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c66",
+      "claim": "There are six ready-made graph recipes reusing the same skeleton — security sweep, cited research, module port, adversarial diff-review, scheduled ecosystem scan, and unknown-size discovery.",
+      "anchor": "Six concrete jobs that reuse the same skeleton with a different task line:\n\n1. **Security sweep.**... 2. **Cited research.**... 3. **Module port.**... 4. **Adversarial diff-review.**... 5. **Scheduled ecosystem scan.**... 6. **Unknown-size discovery.**",
+      "anchor_start": null,
+      "anchor_end": null,
+      "anchor_unresolved": true,
+      "resolution": "unresolved"
+    },
+    {
+      "id": "c67",
+      "claim": "A graph needs anchors — outputs that cannot be argued with, like tests that actually ran, revenue that landed in the bank, and customers who actually stayed — because topology alone does not buy truth, and letting a system grade its own reports leaves it confidently wrong.",
+      "anchor": "A graph needs **anchors** — nodes whose outputs cannot be argued with: tests that actually ran (not \"should pass\" — *did* pass), revenue that landed in the bank, customers who actually stayed... Judge a graph on numbers that can't argue back and it stays grounded. Let it grade its own reports and it will be confidently wrong.",
+      "anchor_start": null,
+      "anchor_end": null,
+      "anchor_unresolved": true,
+      "resolution": "unresolved"
+    },
+    {
+      "id": "c68",
+      "claim": "Anthropic's published numbers show a single agent burns roughly 4x the tokens of a chat interaction, while multi-agent systems burn roughly 15x, and every added node multiplies that cost further.",
+      "anchor": "Anthropic's published numbers: a single agent burns roughly 4× the tokens of a chat interaction; multi-agent systems burn roughly 15×. Every node you add multiplies that.",
+      "anchor_start": 33360,
+      "anchor_end": 33530,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c69",
+      "claim": "Jarred Sumner ported Bun from Zig to Rust — a million lines of code in under two weeks, passing the entire existing test suite in CI before merge, at a cost of 5.9 billion uncached input tokens and 690 million output tokens (~$165,000 at API pricing).",
+      "anchor": "Jarred Sumner ported Bun from Zig to Rust — a million lines of code in under two weeks with the entire existing test suite passing in CI before the merge landed, burning 5.9 billion uncached input tokens and 690 million output tokens (~$165,000 at API pricing)",
+      "anchor_start": 33626,
+      "anchor_end": 33886,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c70",
+      "claim": "Mike Krieger converted a Python codebase to 165,000 lines of TypeScript over a weekend using hundreds of agents, eight phase gates, three adversarial review rounds, and a final check diffing every command's output against the Python original.",
+      "anchor": "Mike Krieger took a Python codebase to 165,000 lines of TypeScript over a weekend using hundreds of agents, eight phase gates, three adversarial review rounds, and a final check that diffed every command's output against the Python original.",
+      "anchor_start": 33975,
+      "anchor_end": 34216,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    },
+    {
+      "id": "c71",
+      "claim": "Anthropic's multi-agent research system outperformed a single Opus agent by 90.2% on their internal research eval because research naturally fans out into independent searches, but Anthropic's standing advice remains to find the simplest solution and add complexity only when the task demands it.",
+      "anchor": "Anthropic's multi-agent research system outperformed a single Opus agent by 90.2% on their internal research eval, because research fans out into independent searches naturally. But their standing advice from *Building Effective Agents* hasn't changed: find the simplest solution possible, and only add complexity when the task demands it.",
+      "anchor_start": 34277,
+      "anchor_end": 34616,
+      "anchor_unresolved": false,
+      "resolution": "exact"
+    }
+  ]
+}
