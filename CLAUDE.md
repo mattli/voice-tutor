@@ -150,3 +150,48 @@ the accumulated bar monotonic but also makes any number it records permanent
 (only `backfill_coverage.py --force` can revise it). When the judge's output is
 suspect, the correct degradation is **no sidecar**, not a plausible one — see
 `coverage_judge.MassCitationDowngradeError`.
+
+## Teardown is a latency BUDGET, not a sequence — the ended view gives up at 60s (2026-08-04)
+
+`static/study.html` polls `/api/sessions/{id}/telemetry` 30 times at 2s
+(`MAX_POLL_ATTEMPTS`) and then tells the user "Recap didn't generate within 60s."
+So **late is indistinguishable from broken**, and every artifact the ended view
+renders — recap, cost, memory_append, analysis — is on a 60-second clock that
+starts at client disconnect.
+
+Two independent ways that clock got blown, both found only by real sessions:
+
+1. **A long step placed in front of polled artifacts.** The coverage judge
+   (30–60s) was awaited inside `save_transcript`; anything after it inherited its
+   latency. The recap landed at 74s, then — after the recap was moved ahead of it
+   — summary/analysis/cost landed at 69s. Both were pure ordering.
+   **Rule:** post-session model calls run as `asyncio.create_task` and are awaited
+   at the END of teardown, never as blocking steps. Nothing the UI polls for may
+   sit behind one. The single `await asyncio.sleep(0)` after spawning is
+   load-bearing: `generate_session_summary`/`generate_session_analysis` are
+   synchronous and hold the event loop ~15s, so without that yield the tasks never
+   reach their first await and the work re-serialises.
+2. **An authorization predicate that depended on a late write.** `/telemetry`
+   first asks `sessions.session_belongs_to`, which scanned the session-log row —
+   written LAST in teardown. So the endpoint 404'd for the whole teardown window,
+   and the recap sat on disk from 5s while all 30 polls failed.
+   **Rule:** a predicate gating a polled endpoint must key on something written
+   EARLY. Ownership now comes from the transcript (written first, in the user's own
+   namespace); the ledger scan is only the fallback.
+
+Neither was catchable by the suite — `bot.py` is untested at the transport layer
+by the rule above, and both bugs were ordering, not logic. **Time a real session
+end-to-end after any teardown change** and compare artifact mtimes against the
+disconnect timestamp; a green suite says nothing here.
+
+## The judge is NOT reproducible at temperature 0 — verify prompt changes by majority-of-3 (2026-08-04)
+
+Re-judging an unchanged transcript, same prompt, same model, temperature 0, gave
+11 covered claims in one run and 10 in another (c31 flipped). Temperature 0 biases
+sampling; it does not make inference bit-reproducible. So a **single-run label
+disagreement is not evidence** a prompt change worked or broke something — judge
+each eval session three times and take the per-claim majority before diffing
+against `labels.json`. Anything inside ±1–2 claims per session is noise. The
+near-miss worth remembering: the union hit 16 claims in both runs with *different
+composition* — **a stable total is not evidence of a stable verdict set**; compare
+id sets, not counts.
