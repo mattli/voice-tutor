@@ -670,7 +670,7 @@ def test_generate_regenerates_on_source_hash_mismatch(claims_docs_dir):
         claims.generate_claims(USER_ID, doc_id, text)
     assert client.messages.stream.call_count == 1
 
-    # The served document drifted (e.g. the vault page was edited after caching)
+    # The stored text no longer matches the text the rubric was extracted from
     # -> its hash no longer matches the stamped one -> MUST regenerate.
     changed = text + "\n\n## New section added upstream\n\nA fresh fact.\n"
     assert claims._hash_source(changed) != claims._hash_source(text)
@@ -722,6 +722,33 @@ def test_load_fresh_claims_is_user_scoped(claims_docs_dir):
     assert claims.load_fresh_claims("matt", "D", text) is not None
     # Mirror image: sarah has no sidecar for D -> None (degrade to plain study).
     assert claims.load_fresh_claims("sarah", "D", text) is None
+
+
+def test_fresh_map_identity_reports_the_hash_and_the_map_size(claims_docs_dir):
+    text = "Some doc text."
+    _seed_fresh_sidecar(claims_docs_dir, user_id="matt", doc_id="D", text=text)
+    got = claims.fresh_map_identity("matt", "D", text)
+    assert got == {"source_hash": claims._hash_source(text), "claims_total": 1}
+
+
+def test_fresh_map_identity_is_None_for_a_STALE_map(claims_docs_dir):
+    # Stale means only this: the stored text no longer hashes to what the map was
+    # extracted from. Same freshness gate as load_fresh_claims, deliberately — a
+    # map the tutor would not steer with is not a rubric to report progress
+    # against.
+    text = "Some doc text."
+    _seed_fresh_sidecar(claims_docs_dir, user_id="matt", doc_id="D", text=text)
+    assert claims.fresh_map_identity("matt", "D", "text that hashes differently") is None
+
+
+def test_fresh_map_identity_is_None_when_there_is_no_map_at_all(claims_docs_dir):
+    assert claims.fresh_map_identity("matt", "D", "Some doc text.") is None
+
+
+def test_fresh_map_identity_is_user_scoped(claims_docs_dir):
+    text = "Some doc text."
+    _seed_fresh_sidecar(claims_docs_dir, user_id="matt", doc_id="D", text=text)
+    assert claims.fresh_map_identity("sarah", "D", text) is None
 
 
 def test_documents_dir_defined_locally_not_reexported_from_documents():

@@ -48,4 +48,32 @@ assert.strictEqual(
   pollIsDone({ recap: null, cost: C, expects_summary: false }, false),
   false, 'no recap yet → not done');
 
-console.log('poll-done: all 6 cases passed');
+// ── coverage: expects_coverage gates the wait, and only when true ──
+// A false verdict must leave the client waiting for NOTHING — otherwise every
+// session without a claim map polls to the 60s cap for a sidecar that is never
+// coming (the failure mode expects_summary already exists to prevent).
+assert.strictEqual(
+  pollIsDone({ recap: R, cost: C, has_prompt: false, expects_summary: false, expects_coverage: false, coverage: null }, false),
+  true, 'no coverage expected → done, never waits');
+
+// A server that predates the field (undefined) behaves exactly as before.
+assert.strictEqual(
+  pollIsDone({ recap: R, cost: C, has_prompt: false, expects_summary: false }, false),
+  true, 'expects_coverage absent → done');
+
+// Expected but not yet judged → keep polling (bounded by MAX_POLL_ATTEMPTS).
+assert.strictEqual(
+  pollIsDone({ recap: R, cost: C, has_prompt: false, expects_summary: false, expects_coverage: true, coverage: null }, false),
+  false, 'coverage expected, sidecar pending → not done');
+
+// The document total alone is not the session's coverage: the delta is what the
+// judge produces, so a block carrying only `total` must not end the poll.
+assert.strictEqual(
+  pollIsDone({ recap: R, cost: C, has_prompt: false, expects_summary: false, expects_coverage: true, coverage: { total: { covered: 16, total: 63 }, session: null } }, false),
+  false, 'accumulated total only → not done');
+
+assert.strictEqual(
+  pollIsDone({ recap: R, cost: C, has_prompt: false, expects_summary: false, expects_coverage: true, coverage: { total: { covered: 16, total: 63 }, session: { covered: 7, new_claims: 4 } } }, false),
+  true, 'coverage landed → done');
+
+console.log('poll-done: all 11 cases passed');

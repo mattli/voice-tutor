@@ -1255,8 +1255,12 @@ def _assemble_verdict(
 # --------------------------------------------------------------------------- #
 
 # Fixed rounding convention for the derived percentage: 1 decimal place. Factored
-# out so the single documented convention is applied in exactly one place.
-_COVERAGE_PERCENTAGE_DECIMALS = 1
+# out so the single documented convention is applied in exactly one place — and
+# PUBLIC because coverage_store derives its own display percentage (covered over
+# the claim MAP's size, not over the judged universe) and must round identically;
+# two modules rounding a user-facing number by different conventions is exactly
+# the kind of drift a shared constant exists to prevent.
+COVERAGE_PERCENTAGE_DECIMALS = 1
 
 
 def _verdict_list_of(verdict_set: Any) -> list:
@@ -1317,14 +1321,19 @@ def union_coverage(verdict_sets: Any, *, allow_unidentified: bool = False) -> di
 
     Returns a dict::
 
-        {"covered_ids": [<claim id>, ...], "percentage": <float>}
+        {"covered_ids": [<claim id>, ...], "judged_ids": [<claim id>, ...],
+         "percentage": <float>}
 
-    where ``covered_ids`` is the sorted, de-duplicated union of covered ids and
-    ``percentage`` is DERIVED AT READ TIME as::
+    where ``covered_ids`` is the sorted, de-duplicated union of covered ids,
+    ``judged_ids`` is the sorted, de-duplicated set of every claim id judged in
+    any set (covered or not — the percentage's denominator, returned so a caller
+    merging ONE SET AT A TIME can rebuild the same universe rather than
+    re-deriving it from verdict internals), and ``percentage`` is DERIVED AT READ
+    TIME as::
 
         100 * (# distinct covered ids) / (# distinct judged ids across all sets)
 
-    rounded to a single fixed convention (:data:`_COVERAGE_PERCENTAGE_DECIMALS`
+    rounded to a single fixed convention (:data:`COVERAGE_PERCENTAGE_DECIMALS`
     decimal places). The denominator counts EVERY distinct claim id judged in any
     session (covered or not), so a not-covered claim still contributes to the
     universe. Empty input (no sets, or sets with empty verdict lists) yields
@@ -1394,8 +1403,12 @@ def union_coverage(verdict_sets: Any, *, allow_unidentified: bool = False) -> di
     if total == 0:
         percentage = 0.0
     else:
-        percentage = round(100.0 * len(covered) / total, _COVERAGE_PERCENTAGE_DECIMALS)
-    return {"covered_ids": sorted(covered), "percentage": percentage}
+        percentage = round(100.0 * len(covered) / total, COVERAGE_PERCENTAGE_DECIMALS)
+    return {
+        "covered_ids": sorted(covered),
+        "judged_ids": sorted(judged),
+        "percentage": percentage,
+    }
 
 
 # --------------------------------------------------------------------------- #

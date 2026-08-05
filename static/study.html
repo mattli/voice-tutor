@@ -1216,10 +1216,19 @@
   // coming; for a skipped session (user never spoke) they never arrive and must
   // not be required, or the poll spins to its cap. Matt-only fields (has_prompt,
   // analysis) are redacted for non-Matt and so are not required for them.
+  // data.expects_coverage is the same kind of server verdict as expects_summary:
+  // true only when the judge is enabled AND the document has a fresh claim map
+  // AND the session cleared the turn floor — i.e. only when a sidecar is really
+  // coming. When it is FALSE the client waits for nothing: no extra poll, no
+  // held done-condition, and nothing coverage-related is rendered at all. This
+  // can never extend polling past MAX_POLL_ATTEMPTS; it only avoids finishing
+  // early on a session whose coverage is still in flight.
   function pollIsDone(data, isMatt) {
     const expectsSummary = !!data.expects_summary;
+    const expectsCoverage = !!data.expects_coverage;
     return !!(data.recap && data.cost && (!isMatt || data.has_prompt)
-      && (!expectsSummary || (data.memory_append && (!isMatt || data.analysis))));
+      && (!expectsSummary || (data.memory_append && (!isMatt || data.analysis)))
+      && (!expectsCoverage || (data.coverage && data.coverage.session)));
   }
   // POLL_DONE_END
 
