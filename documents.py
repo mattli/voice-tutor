@@ -48,6 +48,23 @@ class UploadError(Exception):
         super().__init__(detail)
 
 
+class DocumentActionError(Exception):
+    """Raised for a refused archive/restore, carrying the status the route returns."""
+
+    def __init__(self, status_code: int, detail: str):
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(detail)
+
+
+# Removed documents are MOVED here, never deleted. The picker's scan globs
+# ``*.txt`` non-recursively, so a subdirectory is invisible to it with no filter
+# logic to keep in sync — and `_load_from_dir` builds an exact path, so an
+# archived document also stops being loadable for study. Both properties fall
+# out of the move itself rather than being enforced.
+ARCHIVE_DIRNAME = "_archive"
+
+
 def _extract_text(filename: str, raw: bytes) -> str:
     ext = Path(filename).suffix.lower()
     if ext == ".pdf":
@@ -227,6 +244,128 @@ def _load_from_dir(d: Path, doc_id: str) -> tuple[str, str] | None:
     originals = [p for p in d.glob(f"{doc_id}-*") if p != txt_path]
     original_name = originals[0].name.removeprefix(f"{doc_id}-") if originals else f"{doc_id}.txt"
     return _derive_title(text, original_name), text
+
+
+def _archive_root(user_id: str) -> Path:
+    return user_dir(user_id) / ARCHIVE_DIRNAME
+
+
+def _doc_files(d: Path, doc_id: str) -> list[Path]:
+    """Every file belonging to ``doc_id`` in directory ``d``.
+
+    The extracted text, the original upload, the summary sidecar and the claim
+    map all share the ``<doc_id>`` stem, so matching on it keeps the set complete
+    without this function having to know each sidecar's suffix — a new sidecar
+    type is archived with its document automatically.
+
+    A BARE prefix match would be wrong: ``<doc_id>*`` also matches a different
+    document whose id merely starts with these characters, and archiving one
+    document must never move another's files. Only the exact ``<doc_id>.txt``,
+    ``<doc_id>.<suffix>`` and ``<doc_id>-<original name>`` forms this module
+    actually writes are matched.
+    """
+    doc_id = Path(doc_id).name
+    return sorted(
+        p
+        for p in d.glob(f"{doc_id}*")
+        if p.is_file()
+        and (p.name == doc_id or p.name.startswith((f"{doc_id}.", f"{doc_id}-")))
+    )
+
+
+def archive_document(user_id: str, doc_id: str, *, stamp: str | None = None) -> dict:
+    """Move ``doc_id`` out of ``user_id``'s picker into their archive. Never deletes.
+
+    Returns ``{"document_id", "archived_at", "files"}``. Raises
+    :class:`DocumentActionError` with the status the route should return:
+
+      * **409** for a document in the SHARED namespace. It belongs to every
+        user and there is no app write path to that directory, so one user
+        removing it would silently remove it for everyone. Refusing is the only
+        honest answer until per-user hiding exists.
+      * **404** when the id resolves to no document at all.
+
+    The move is reversible by :func:`restore_document` and nothing else is
+    touched — transcripts, coverage sidecars, artifacts and ledger rows are
+    RECORDS of sessions that really happened, and removing a document does not
+    unhappen them. A coverage sidecar for an archived document simply has no
+    document to attach to; it neither breaks the union nor shows a bar, because
+    both are driven by documents that exist.
+    """
+    safe_id = Path(doc_id).name
+    own = user_dir(user_id)
+    if not (own / f"{safe_id}.txt").exists():
+        if (_shared_dir() / f"{safe_id}.txt").exists():
+            raise DocumentActionError(
+                409, "shared documents can't be removed — they belong to every user"
+            )
+        raise DocumentActionError(404, "document not found")
+
+    stamp = stamp or datetime.now().strftime("%Y-%m-%d-%H%M%S")
+    target = _archive_root(user_id) / f"{safe_id}-{stamp}"
+    target.mkdir(parents=True, exist_ok=True)
+    moved = []
+    for path in _doc_files(own, safe_id):
+        path.rename(target / path.name)
+        moved.append(path.name)
+    return {"document_id": safe_id, "archived_at": stamp, "files": moved}
+
+
+def _newest_archive_dir(user_id: str, doc_id: str) -> Path | None:
+    """The most recent archive folder for ``doc_id``, or None if never archived."""
+    safe_id = Path(doc_id).name
+    root = _archive_root(user_id)
+    if not root.is_dir():
+        return None
+    candidates = sorted(p for p in root.glob(f"{safe_id}-*") if p.is_dir())
+    return candidates[-1] if candidates else None
+
+
+def restore_document(user_id: str, doc_id: str) -> dict:
+    """Move the most recently archived copy of ``doc_id`` back into the picker.
+
+    Powers the undo affordance, and is also the manual recovery path long after
+    the toast is gone — which is the reason archiving beats deleting. Raises
+    :class:`DocumentActionError`: **404** when nothing is archived under that id,
+    **409** when a live document already occupies it (restoring would otherwise
+    overwrite a document that exists now).
+    """
+    safe_id = Path(doc_id).name
+    source = _newest_archive_dir(user_id, safe_id)
+    if source is None:
+        raise DocumentActionError(404, "no archived document with that id")
+    own = user_dir(user_id)
+    if (own / f"{safe_id}.txt").exists():
+        raise DocumentActionError(409, "a document with that id is already live")
+    own.mkdir(parents=True, exist_ok=True)
+    restored = []
+    for path in sorted(source.glob("*")):
+        if path.is_file():
+            path.rename(own / path.name)
+            restored.append(path.name)
+    if not any(source.iterdir()):
+        source.rmdir()
+    return {"document_id": safe_id, "files": restored}
+
+
+def resolve_title(user_id: str, doc_id: str) -> str | None:
+    """Title for a document that may since have been archived — HISTORY ONLY.
+
+    Past sessions on an archived document must keep their names; a session that
+    really happened should not render as "Unknown document" because the document
+    was later put away. Deliberately NOT a fallback inside
+    :func:`load_document`: that would make an archived document studyable again,
+    which is the one thing archiving is supposed to prevent. Callers that start
+    or ground a session must keep using ``load_document``.
+    """
+    loaded = load_document(user_id, doc_id)
+    if loaded is not None:
+        return loaded[0]
+    source = _newest_archive_dir(user_id, doc_id)
+    if source is None:
+        return None
+    archived = _load_from_dir(source, doc_id)
+    return archived[0] if archived else None
 
 
 def load_document(user_id: str, doc_id: str) -> tuple[str, str] | None:

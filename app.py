@@ -328,6 +328,29 @@ async def list_documents_route(user_id: str = Depends(require_user)):
     return await documents.list_documents(user_id)
 
 
+@app.delete("/api/documents/{doc_id}")
+async def remove_document(doc_id: str, user_id: str = Depends(require_user)):
+    """Archive ``doc_id`` out of the picker. Never deletes; always reversible.
+
+    Strictly user-scoped: the archive path is built from the AUTHENTICATED
+    user_id, so a crafted id can only ever move a document the caller owns. A
+    shared document is refused with 409 rather than removed for everybody.
+    """
+    try:
+        return documents.archive_document(user_id, Path(doc_id).name)
+    except documents.DocumentActionError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@app.post("/api/documents/{doc_id}/restore")
+async def restore_document_route(doc_id: str, user_id: str = Depends(require_user)):
+    """Undo an archive. Backs the toast, and the manual recovery path after it."""
+    try:
+        return documents.restore_document(user_id, Path(doc_id).name)
+    except documents.DocumentActionError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
 def _fresh_map_identity(user_id: str, doc_id: str) -> dict | None:
     """Claim-map identity for ``doc_id``, or None when there is no fresh map.
 
@@ -541,10 +564,12 @@ def _lookup_session_doc(user_id: str, session_id: str) -> dict | None:
                 continue
             if entry.get("kind") == "session" and entry.get("session_id") == session_id:
                 doc_id = entry.get("document_id")
-                loaded = documents.load_document(user_id, doc_id) if doc_id else None
+                # resolve_title, not load_document: a session on a since-archived
+                # document keeps its name in history. It never makes the document
+                # studyable again — only the title is resolved.
                 return {
                     "document_id": doc_id,
-                    "document_title": loaded[0] if loaded else None,
+                    "document_title": documents.resolve_title(user_id, doc_id) if doc_id else None,
                 }
     return None
 

@@ -460,6 +460,19 @@ def test_list_study_sessions_shared_doc_is_per_user(cost_log_tmp, docs_dir):
     assert sessions.list_study_sessions("dev") == []
 
 
+def test_history_keeps_the_title_after_the_document_is_archived(cost_log_tmp, docs_dir):
+    # Removing a document from the picker does not unhappen the sessions run
+    # against it, so their rows must not degrade to an untitled entry.
+    import documents
+
+    _seed_doc(docs_dir, "doc-arch", "Graph Engineering", user_id="matt")
+    _seed_session(cost_log_tmp, session_id="s1", document_id="doc-arch", user_id="matt")
+    assert sessions.list_study_sessions("matt")[0]["document_title"] == "Graph Engineering"
+
+    documents.archive_document("matt", "doc-arch")
+    assert sessions.list_study_sessions("matt")[0]["document_title"] == "Graph Engineering"
+
+
 def test_can_view_machine_artifacts_matt_only():
     # Mirror image: a non-matt user is denied prompt/analysis/cost-log surfaces.
     assert sessions.can_view_machine_artifacts("matt") is True

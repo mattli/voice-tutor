@@ -722,6 +722,210 @@
   }
   .diagnostics__persistent a:hover { color: var(--accent); text-decoration: underline; }
 
+  /* ── coverage ────────────────────────────────────────
+     Never framed as a goal or a fillable bar: the claim map is exhaustive by
+     design (majors + minors + asides) and conversation never naturally reaches
+     the parentheticals, so 100% is not the target and copy must not imply it.
+     The percentage leads; the count underneath reads as inventory. */
+  .coverage {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    padding: 16px 18px 18px;
+    margin-bottom: 26px;
+  }
+  .coverage__label {
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 10px;
+  }
+  .coverage__row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .coverage__pct {
+    font-family: var(--serif);
+    font-size: 30px;
+    font-weight: 500;
+    color: var(--ink);
+    letter-spacing: -0.015em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+  .coverage__delta {
+    font-size: 13px;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .coverage__bar {
+    height: 6px;
+    background: var(--paper-2);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .coverage__fill {
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+    border-radius: 3px;
+    transition: width 400ms ease;
+  }
+  .coverage__meta {
+    font-size: 13px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    margin: 8px 0 0;
+  }
+
+  /* Picker rows: the same bar at list scale. Absent — not zeroed — for a
+     document with no judged sessions. */
+  .doc__cov {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .doc__cov-bar {
+    flex: 1;
+    height: 4px;
+    background: var(--paper-2);
+    border-radius: 2px;
+    overflow: hidden;
+    min-width: 40px;
+  }
+  .doc__cov-fill {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+  .doc__cov-text {
+    font-size: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+  }
+
+  /* ── document rows: swipe (touch) / hover (pointer) to remove ──
+     The row is the clipping container; the card slides over a delete panel
+     pinned behind its right edge. */
+  .doc-row {
+    position: relative;
+    background: var(--paper-2);
+    overflow: hidden;
+  }
+  .doc-row__action {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 92px;
+    display: flex;
+  }
+  .doc-del {
+    flex: 1;
+    border: 0;
+    background: var(--paper-2);
+    color: #8a3a3a;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    padding: 0;
+  }
+  .doc-del:hover, .doc-del:focus-visible { background: #efe4de; outline: none; }
+  .doc-row .doc {
+    position: relative;
+    transform: translateX(0);
+    transition: transform 200ms ease;
+    touch-action: pan-y;
+  }
+  .doc-row.is-open .doc { transform: translateX(-92px); }
+
+  .doc__remove {
+    position: absolute;
+    top: 50%;
+    right: 14px;
+    transform: translateY(-50%);
+    width: 30px;
+    height: 30px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    border-radius: 6px;
+    cursor: pointer;
+    padding: 0;
+  }
+  .doc__remove:hover, .doc__remove:focus-visible {
+    color: #8a3a3a;
+    background: var(--paper-2);
+    outline: none;
+  }
+  /* Swipe is the touch affordance; a pointer that can hover gets its own, since
+     swipe alone strands every desktop user. */
+  @media (hover: hover) and (pointer: fine) {
+    .doc-row:hover .doc__remove, .doc-row:focus-within .doc__remove { display: flex; }
+    .doc-row:hover .doc__chev, .doc-row:focus-within .doc__chev { opacity: 0; }
+    .doc-row__action { display: none; }
+  }
+
+  /* ── undo toast ──────────────────────────────────────
+     Archiving is reversible, so the affordance is an undo rather than a modal
+     confirm — one tap instead of two on the surface where taps cost most. */
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: max(20px, env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    z-index: 20;
+    width: calc(100% - 36px);
+    max-width: 420px;
+    background: var(--card);
+    border: 1px solid var(--rule-2);
+    border-radius: var(--radius);
+    box-shadow: 0 6px 20px rgba(28, 26, 23, 0.12);
+    padding: 12px 14px 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .toast__text {
+    flex: 1;
+    font-size: 14px;
+    color: var(--ink-2);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .toast__action {
+    border: 0;
+    background: transparent;
+    color: var(--accent);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 4px 6px;
+    flex-shrink: 0;
+  }
+  .toast__action:hover, .toast__action:focus-visible {
+    color: var(--accent-ink);
+    text-decoration: underline;
+    outline: none;
+  }
+
   @media (min-width: 600px) {
     .app { padding: 60px 32px 120px; }
     .session__doc-title { font-size: 38px; }
@@ -818,6 +1022,19 @@
   <section class="screen" id="screen-ended">
 
     <div id="recap-ready">
+      <!-- Coverage sits WITH the recap, not in the diagnostics footer: it is a
+           learning artifact for the user, not machine telemetry. Absent entirely
+           when there is no coverage data — never an error, never an empty bar. -->
+      <div class="coverage" id="coverage-card" style="display:none;">
+        <p class="coverage__label">Coverage</p>
+        <div class="coverage__row">
+          <span class="coverage__pct" id="coverage-pct"></span>
+          <span class="coverage__delta" id="coverage-delta"></span>
+        </div>
+        <div class="coverage__bar"><div class="coverage__fill" id="coverage-fill"></div></div>
+        <p class="coverage__meta" id="coverage-meta"></p>
+      </div>
+
       <div class="recap-inline-loading" id="recap-inline-loading" role="status" aria-live="polite">
         <div class="recap-inline-loading__dots" aria-hidden="true"><span></span><span></span><span></span></div>
         <div class="recap-inline-loading__label" id="recap-inline-loading-label">Generating recap…</div>
@@ -875,6 +1092,11 @@
 
 </main>
 
+<div class="toast" id="toast" role="status" aria-live="polite" style="display:none;">
+  <span class="toast__text" id="toast-text"></span>
+  <button class="toast__action" id="toast-undo" type="button">Undo</button>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script>
   // ─── constants ─────────────────────────────────────
@@ -899,6 +1121,10 @@
 
   // ─── state ─────────────────────────────────────────
   let docs = [];
+  // doc_id -> {covered, total, percentage, sessions}. A document is ABSENT here
+  // until it has judged coverage — absent and 0% read differently to a person,
+  // so the bar is omitted rather than drawn empty.
+  let coverage = {};
   let currentDoc = null;
   let sessionId = null;
   let pc = null;
@@ -978,6 +1204,34 @@
       return;
     }
     renderDocs();
+    loadCoverage();  // fire-and-forget: bars fill in when they arrive
+  }
+
+  // Coverage is an ENHANCEMENT to a list that must keep working without it, so
+  // it is fetched separately and never awaited by the render. A wrong-shaped or
+  // failed response keeps the last good numbers rather than blanking the bars —
+  // the poll lesson from the dev-harness dashboard applies here verbatim.
+  async function loadCoverage() {
+    try {
+      const r = await fetch('/api/coverage');
+      if (!r.ok) return;
+      const data = await r.json();
+      if (!data || typeof data.documents !== 'object' || data.documents === null) return;
+      coverage = data.documents;
+      renderDocs();
+    } catch {}
+  }
+
+  function coverageMarkup(docId) {
+    const c = coverage[docId];
+    // No sessions -> no element at all. Never a 0% bar.
+    if (!c || !c.total || typeof c.percentage !== 'number') return '';
+    const pct = Math.max(0, Math.min(100, c.percentage));
+    return `
+        <span class="doc__cov">
+          <span class="doc__cov-bar"><span class="doc__cov-fill" style="width:${pct}%"></span></span>
+          <span class="doc__cov-text">${pct}% · ${c.covered} of ${c.total}</span>
+        </span>`;
   }
 
   function renderDocs() {
@@ -990,17 +1244,139 @@
       return;
     }
     docListMount.innerHTML = `<div class="doc-list">${docs.map(d => `
-      <button class="doc" type="button" data-id="${escapeHtml(d.document_id)}">
-        <span class="doc__body">
-          <span class="doc__title">${escapeHtml(d.title)}</span>
-          <span class="doc__meta">${d.char_count.toLocaleString()} chars<span class="doc__sep">·</span>${escapeHtml(d.uploaded_at.slice(0,10))}</span>
-        </span>
-        <svg class="doc__chev" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-          <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"></path>
-        </svg>
-      </button>`).join('')}</div>`;
+      <div class="doc-row" data-id="${escapeHtml(d.document_id)}">
+        <div class="doc-row__action">
+          <button class="doc-del" type="button" data-id="${escapeHtml(d.document_id)}">Delete</button>
+        </div>
+        <button class="doc" type="button" data-id="${escapeHtml(d.document_id)}">
+          <span class="doc__body">
+            <span class="doc__title">${escapeHtml(d.title)}</span>
+            <span class="doc__meta">${d.char_count.toLocaleString()} chars<span class="doc__sep">·</span>${escapeHtml(d.uploaded_at.slice(0,10))}</span>
+            ${coverageMarkup(d.document_id)}
+          </span>
+          <svg class="doc__chev" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+        </button>
+        <button class="doc__remove" type="button" data-id="${escapeHtml(d.document_id)}" aria-label="Remove ${escapeHtml(d.title)}">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M3 4.5h10M6.5 4.5V3.2h3v1.3M4.4 4.5l.5 8.3h6.2l.5-8.3M6.6 6.8v4M9.4 6.8v4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+        </button>
+      </div>`).join('')}</div>`;
     docListMount.querySelectorAll('.doc').forEach(btn => {
-      btn.addEventListener('click', () => selectDoc(btn.dataset.id));
+      btn.addEventListener('click', () => {
+        // A swipe that ends on the card must not also open the document.
+        if (btn.closest('.doc-row').classList.contains('is-open')) { closeAllRows(); return; }
+        selectDoc(btn.dataset.id);
+      });
+    });
+    docListMount.querySelectorAll('.doc-del, .doc__remove').forEach(btn => {
+      btn.addEventListener('click', e => { e.stopPropagation(); removeDoc(btn.dataset.id); });
+    });
+    wireSwipe();
+  }
+
+  // ─── swipe-to-reveal (touch) ───────────────────────
+  // Desktop gets the hover-revealed trash button instead (CSS); swipe alone
+  // would strand every pointer user.
+  const SWIPE_OPEN_PX = 92;   // matches .doc-row__action width
+  const SWIPE_TRIGGER_PX = 40;
+
+  function closeAllRows() {
+    docListMount.querySelectorAll('.doc-row.is-open').forEach(r => r.classList.remove('is-open'));
+  }
+
+  function wireSwipe() {
+    docListMount.querySelectorAll('.doc-row').forEach(row => {
+      const card = row.querySelector('.doc');
+      let startX = 0, startY = 0, dx = 0, tracking = false;
+
+      row.addEventListener('touchstart', e => {
+        const t = e.touches[0];
+        startX = t.clientX; startY = t.clientY; dx = 0; tracking = true;
+        card.style.transition = 'none';
+      }, { passive: true });
+
+      row.addEventListener('touchmove', e => {
+        if (!tracking) return;
+        const t = e.touches[0];
+        dx = t.clientX - startX;
+        // Vertical intent wins — the list has to stay scrollable.
+        if (Math.abs(t.clientY - startY) > Math.abs(dx)) { tracking = false; card.style.transform = ''; return; }
+        const base = row.classList.contains('is-open') ? -SWIPE_OPEN_PX : 0;
+        const offset = Math.max(-SWIPE_OPEN_PX, Math.min(0, base + dx));
+        card.style.transform = `translateX(${offset}px)`;
+      }, { passive: true });
+
+      row.addEventListener('touchend', () => {
+        if (!tracking) return;
+        tracking = false;
+        card.style.transition = '';
+        card.style.transform = '';
+        const wasOpen = row.classList.contains('is-open');
+        if (!wasOpen && dx < -SWIPE_TRIGGER_PX) { closeAllRows(); row.classList.add('is-open'); }
+        else if (wasOpen && dx > SWIPE_TRIGGER_PX) { row.classList.remove('is-open'); }
+      });
+    });
+  }
+
+  // ─── remove (archive) + undo ───────────────────────
+  // Archive, never delete: the files are moved aside and can come back, which is
+  // what makes a single tap plus an undo the right affordance instead of a
+  // confirm modal. The toast is the fast path; the archive folder is the durable
+  // one for anyone who misses it.
+  let toastTimer = null;
+
+  function showToast(text, onUndo) {
+    if (toastTimer) clearTimeout(toastTimer);
+    $('toast-text').textContent = text;
+    const undo = $('toast-undo');
+    const fresh = undo.cloneNode(true);   // drop any previous handler
+    undo.replaceWith(fresh);
+    fresh.addEventListener('click', () => { hideToast(); onUndo(); });
+    $('toast').style.display = 'flex';
+    toastTimer = setTimeout(hideToast, 8000);
+  }
+
+  function hideToast() {
+    if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+    $('toast').style.display = 'none';
+  }
+
+  async function removeDoc(id) {
+    const doc = docs.find(d => d.document_id === id);
+    if (!doc) return;
+    closeAllRows();
+    const index = docs.indexOf(doc);
+    docs = docs.filter(d => d.document_id !== id);   // optimistic
+    renderDocs();
+    let r;
+    try {
+      r = await fetch(`/api/documents/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    } catch {
+      r = null;
+    }
+    if (!r || !r.ok) {
+      // Put it back exactly where it was and say why, rather than leaving the
+      // user looking at a list that quietly disagrees with the server.
+      docs.splice(index, 0, doc);
+      renderDocs();
+      uploadStatus.classList.add('is-error');
+      uploadStatus.textContent = r && r.status === 409
+        ? 'Shared documents can’t be removed.'
+        : 'Couldn’t remove that document.';
+      return;
+    }
+    showToast(`Removed “${doc.title}”`, async () => {
+      try {
+        const rr = await fetch(`/api/documents/${encodeURIComponent(id)}/restore`, { method: 'POST' });
+        if (!rr.ok) throw new Error('restore failed');
+      } catch {
+        uploadStatus.classList.add('is-error');
+        uploadStatus.textContent = 'Couldn’t restore that document.';
+      }
+      await loadDocs();
     });
   }
 
@@ -1193,6 +1569,11 @@
     ['diag-cost', 'diag-memory', 'diag-analysis', 'diag-prompt'].forEach(id => {
       $(id).style.display = 'none';
     });
+    // Coverage belongs to one session; carrying a previous session's number into
+    // the next ended view would be a wrong number, not a stale one.
+    $('coverage-card').style.display = 'none';
+    $('coverage-fill').style.width = '0';
+    $('coverage-delta').textContent = '';
     recapInlineLoading.style.display = 'none';
     updateContextLinks();
   }
@@ -1241,7 +1622,13 @@
       if (target !== sessionId) return;
       pollAttempts++;
       try {
-        const r = await fetch(`/api/sessions/${target}/telemetry`);
+        // Pass the document we already know. The server can only learn it from
+        // the session-log row, which teardown writes LAST — so without this the
+        // coverage block would be absent for the whole polling window, which is
+        // the entire window the user is watching.
+        const docQ = currentDoc && currentDoc.document_id
+          ? `?doc=${encodeURIComponent(currentDoc.document_id)}` : '';
+        const r = await fetch(`/api/sessions/${target}/telemetry${docQ}`);
         if (r.ok) {
           const data = await r.json();
           renderTelemetry(data, target);
@@ -1279,6 +1666,8 @@
       updateContextLinks();
     }
 
+    renderCoverage(data.coverage);
+
     if (data.cost && $('diag-cost').style.display === 'none') renderCost(data.cost);
     if (data.memory_append && $('diag-memory').style.display === 'none') renderMemoryAppend(data.memory_append);
     if (window.__isMatt && data.analysis && $('diag-analysis').style.display === 'none') {
@@ -1289,6 +1678,28 @@
       $('prompt-link').href = `/view/sessions/${sid}/prompt`;
       $('diag-prompt').style.display = '';
     }
+  }
+
+  // Coverage on the ended view: the document's accumulated total, plus what this
+  // session added. The two halves are independent — a session whose judge failed
+  // or was skipped still shows the accumulated number, and the delta is simply
+  // absent. No coverage at all means the card never appears; there is no error
+  // state and no spinner, because nothing here is worth telling the user about.
+  function renderCoverage(cov) {
+    const total = cov && cov.total;
+    if (!total || !total.total || typeof total.percentage !== 'number') return;
+    const pct = Math.max(0, Math.min(100, total.percentage));
+    $('coverage-pct').textContent = `${pct}%`;
+    $('coverage-fill').style.width = `${pct}%`;
+    const sessions = total.sessions === 1 ? '1 session' : `${total.sessions} sessions`;
+    $('coverage-meta').textContent = `${total.covered} of ${total.total} claims · ${sessions}`;
+    const session = cov.session;
+    $('coverage-delta').textContent = !session
+      ? ''
+      : session.new_claims > 0
+        ? `+${session.new_claims} new this session`
+        : 'no new claims this session';
+    $('coverage-card').style.display = '';
   }
 
   function fmtUSD(n) { return `$${(n ?? 0).toFixed(3)}`; }
