@@ -117,7 +117,26 @@ def resolve_document(user_id: str, doc_id: str):
             text = txt.read_text()
             claim_objs = claims.load_fresh_claims(user_id, doc_id, text)
             if claim_objs is None:
-                return None, "claim map missing or stale", None
+                # MISSING and STALE are different facts and must not share a
+                # string. `load_fresh_claims` returns None for both, but they
+                # mean opposite things about the data:
+                #   * MISSING -> the document never had a map extracted, so
+                #     these sessions predate the rubric. The text is untouched,
+                #     so extracting now yields a map that legitimately applies
+                #     and the sessions become judgeable. A RECOVERABLE gap.
+                #   * STALE -> a map exists but was extracted from different
+                #     text, so its claim ids no longer mean what a judgment
+                #     would record. NOT recoverable by re-judging.
+                # Collapsing them into "claim map missing or stale" is exactly
+                # what produced a wrong conclusion on 2026-08-04: fifteen skips
+                # were all MISSING (documents predating claim extraction, which
+                # landed 2026-07-26) and were written up as documents having
+                # been edited — a data-loss story for what is a backfill-order
+                # problem. The operator reads these strings and reasons from
+                # them; they have to carry the distinction.
+                if not txt.with_name(txt.stem + ".claims.json").exists():
+                    return None, "no claim map extracted for this document", None
+                return None, "claim map is STALE (document changed since extraction)", None
             return text, claims.source_hash_of(text), claim_objs
     return None, "document text not found on disk", None
 
