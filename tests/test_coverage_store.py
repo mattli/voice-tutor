@@ -352,6 +352,26 @@ def test_cost_is_reported_even_when_the_judge_FAILED():
     assert cost["input_tokens"] == 20, "both billed attempts counted"
 
 
+def test_a_wholesale_citation_failure_writes_NO_sidecar(store_dir):
+    # End of the retry-then-no-sidecar chain. A verdict set whose every coverage
+    # claim cites a nonexistent turn repairs down to a well-formed "0 covered" —
+    # which, written, would be a PERMANENT false zero (append-only: never
+    # re-judged without --force). judge_coverage refuses it, judge_session
+    # degrades to (None, cost_row), and the caller writes nothing.
+    all_bogus = json.dumps({"verdicts": [
+        {"claim_id": "c1", "covered": True, "turns": [101], "reason": "x"},
+        {"claim_id": "c2", "covered": True, "turns": [102], "reason": "y"},
+    ]})
+    sidecar, cost = _judge(client=_Client([_Response(all_bogus, 10, 5)]))
+    assert sidecar is None, "a repaired-to-zero set must not become a record"
+    assert cost["status"] == "failed"
+    assert "MassCitationDowngradeError" in cost["error"]
+    assert cost["calls"] == cj.MAX_JUDGE_ATTEMPTS, "retried, then gave up"
+    # And nothing landed on disk: no coverage data beats permanent wrong data.
+    assert cs.load_sidecar("matt", "sess-1") is None
+    assert cs.union_for_document("matt", "doc-A", "hash-A")["sessions"] == 0
+
+
 def test_an_unobserved_token_count_is_omitted_from_the_ledger_row():
     # Finding 6 at the wiring layer: no confident zero for an unmeasured count.
     _, cost = _judge(client=_Client([_Response(_GOOD)]))

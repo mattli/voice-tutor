@@ -139,6 +139,7 @@ class LedgerTotals:
     # Bookkeeping.
     session_rows: int = 0
     artifact_rows: int = 0
+    coverage_rows: int = 0
 
     @property
     def tts_credits(self) -> float:
@@ -198,16 +199,25 @@ def parse_local_ts(value) -> datetime | None:
 
 
 def _row_kind(row: dict) -> str:
-    """Return 'session', 'artifact', or 'legacy' for a ledger row.
+    """Return 'session', 'artifact', 'coverage', or 'legacy' for a ledger row.
 
     Legacy rows (no 'kind' field) predate the schema and are treated as session
     rows for Sonnet-token / STT / TTS summing (they carry llm_*/stt/tts fields
-    but no post_session/artifact fields)."""
+    but no post_session/artifact fields).
+
+    'coverage' rows (the post-session claim-coverage judge, added 2026-08-04) are
+    a THIRD Haiku spender alongside artifact rows. They must be named here: an
+    unrecognized kind contributes NOTHING to the totals, so a real, billed call
+    would sit in the ledger while the reconciliation reported the provider ahead
+    of us — a phantom logging error of exactly the shape this tool exists to tell
+    apart from real drift."""
     kind = row.get("kind")
     if kind == "artifact":
         return "artifact"
     if kind == "session":
         return "session"
+    if kind == "coverage":
+        return "coverage"
     if "kind" not in row:
         return "legacy"
     return kind  # unknown kind: caller ignores for summing
@@ -218,11 +228,11 @@ def filter_rows_by_local_range(
 ) -> list[dict]:
     """Keep rows whose (local) time falls in [start_local, end_local].
 
-    Session/legacy rows are timestamped by ``session_start``. Artifact rows have
-    NO timestamp of their own, so they are joined to their session's start time
-    via ``session_id`` (an artifact is in-range iff its session is). Rows with no
-    resolvable time are kept only when no bounds are given (full-history default).
-    A None bound means "unbounded on that side".
+    Session/legacy rows are timestamped by ``session_start``. Artifact and
+    coverage rows have NO timestamp of their own, so they are joined to their
+    session's start time via ``session_id`` (they are in-range iff their session
+    is). Rows with no resolvable time are kept only when no bounds are given
+    (full-history default). A None bound means "unbounded on that side".
     """
     if start_local is None and end_local is None:
         return list(rows)
@@ -248,7 +258,7 @@ def filter_rows_by_local_range(
     kept: list[dict] = []
     for row in rows:
         kind = _row_kind(row)
-        if kind == "artifact":
+        if kind in ("artifact", "coverage"):
             ts = session_time.get(row.get("session_id"))
         else:
             ts = parse_local_ts(row.get("session_start"))
@@ -313,6 +323,19 @@ def summarize_ledger(
         elif kind == "artifact":
             totals.artifact_rows += 1
             # Study-artifact generation runs on Haiku.
+            totals.haiku_tokens.add(
+                uncached_input=row.get("input_tokens"),
+                output=row.get("output_tokens"),
+            )
+            totals.recorded_anthropic_usd += _num(row.get("cost_usd"))
+
+        elif kind == "coverage":
+            totals.coverage_rows += 1
+            # The post-session coverage judge also runs on Haiku, and carries the
+            # same input_tokens/output_tokens shape as an artifact row. A FAILED
+            # judge still emits a row with the tokens its attempts burned, so
+            # summing unconditionally is correct — that spend is real and the
+            # provider will bill it whether or not a sidecar was written.
             totals.haiku_tokens.add(
                 uncached_input=row.get("input_tokens"),
                 output=row.get("output_tokens"),
@@ -852,7 +875,10 @@ def main(argv=None) -> int:
     rng_lo = start_local.date() if start_local else "?"
     rng_hi = end_local.date() if end_local else "?"
     print(f"range:   {rng_lo} .. {rng_hi} (local)  ->  {_rfc3339(start_utc)} .. {_rfc3339(end_utc)} (UTC query window)")
-    print(f"rows:    {totals.session_rows} session/legacy, {totals.artifact_rows} artifact")
+    print(
+        f"rows:    {totals.session_rows} session/legacy, {totals.artifact_rows} artifact, "
+        f"{totals.coverage_rows} coverage"
+    )
     print()
 
     json_summary: dict = {"range": {"start_local": str(rng_lo), "end_local": str(rng_hi)}, "providers": {}}

@@ -1610,6 +1610,87 @@ def test_the_strict_citation_checker_is_still_available_and_still_raises():
         )
 
 
+# --- Finding: repair-to-zero would persist a PERMANENT false zero ------------ #
+
+def test_every_coverage_claim_downgraded_is_refused_not_persisted():
+    # An index-space mismatch (the model citing 1-based, or line numbers, or ids
+    # from another rendering) makes EVERY citation bogus, so per-claim repair
+    # quietly produces a well-formed "0 of N covered" verdict set. Under the
+    # append-only policy that zero would be PERMANENT — never re-judged without
+    # --force. It is a transport failure, not a coverage number: retry, then fail.
+    all_bogus = _verdicts_json([("c1", True, [101]), ("c2", True, [102])])
+    client = _ScriptedClient([_RichResponse(all_bogus)])
+    with pytest.raises(cj.MassCitationDowngradeError):
+        cj.judge_coverage(_RF_CLAIMS, _RF_TRANSCRIPT, client=client)
+    assert len(client.calls) == cj.MAX_JUDGE_ATTEMPTS, "retried within the bound"
+
+
+def test_the_mass_downgrade_refusal_is_retryable_and_a_good_retry_wins():
+    # It is a VerdictParseError (the retryable family), so a transient bad
+    # rendering costs one extra call, not the session's coverage.
+    all_bogus = _verdicts_json([("c1", True, [101]), ("c2", True, [102])])
+    client = _ScriptedClient([_RichResponse(all_bogus), _RichResponse(_RF_GOOD)])
+    verdict = cj.judge_coverage(_RF_CLAIMS, _RF_TRANSCRIPT, client=client)
+    assert verdict["verdicts"][0]["covered"] is True
+    assert len(client.calls) == 2
+    assert issubclass(cj.MassCitationDowngradeError, cj.VerdictParseError)
+
+
+def test_one_bad_citation_among_several_still_REPAIRS_rather_than_refusing():
+    # The refusal must stay narrow: it fires only when NOTHING survives. Here c1
+    # is downgraded and c2 keeps a real citation, so the set is still usable and
+    # the per-claim repair (the whole point of the downgrade) is preserved.
+    mixed = _verdicts_json([("c1", True, [101]), ("c2", True, [1])])
+    client = _ScriptedClient([_RichResponse(mixed)])
+    verdict = cj.judge_coverage(_RF_CLAIMS, _RF_TRANSCRIPT, client=client)
+    assert verdict["verdicts"][0]["covered"] is False
+    assert verdict["verdicts"][1]["covered"] is True
+    assert len(client.calls) == 1
+
+
+def test_an_honest_zero_coverage_verdict_is_NOT_refused():
+    # A session where the tutor genuinely covered nothing downgrades nothing, so
+    # it must sail through — refusing it would deny a legitimate (and common)
+    # result and cost the user a real data point.
+    honest = _verdicts_json([("c1", False, []), ("c2", False, [])])
+    client = _ScriptedClient([_RichResponse(honest)])
+    verdict = cj.judge_coverage(_RF_CLAIMS, _RF_TRANSCRIPT, client=client)
+    assert [v["covered"] for v in verdict["verdicts"]] == [False, False]
+    assert verdict["citation_repairs"] == []
+    assert len(client.calls) == 1
+
+
+def test_a_single_downgraded_claim_is_repaired_not_refused():
+    # The threshold that keeps the refusal from swallowing the repair path: ONE
+    # miscited claim is exactly what per-claim repair exists to contain, and it
+    # carries no evidence that the whole index space is wrong.
+    one_bad = _verdicts_json([("c1", True, [101]), ("c2", False, [])])
+    client = _ScriptedClient([_RichResponse(one_bad)])
+    verdict = cj.judge_coverage(_RF_CLAIMS, _RF_TRANSCRIPT, client=client)
+    assert verdict["verdicts"][0]["covered"] is False
+    assert len(client.calls) == 1, "no retry burned for one bad citation"
+
+
+def test_is_mass_citation_downgrade_is_pure_and_directly_reachable():
+    downgraded = [
+        cj.Verdict(claim_id="c1", covered=False, turns=[]),
+        cj.Verdict(claim_id="c2", covered=False, turns=[]),
+    ]
+    repairs = [
+        cj.CitationRepair(claim_id="c1", dropped_turns=[9], downgraded=True),
+        cj.CitationRepair(claim_id="c2", dropped_turns=[8], downgraded=True),
+    ]
+    assert cj.is_mass_citation_downgrade(downgraded, repairs) is True
+    # Below the corroboration threshold: one downgrade is a miscitation, repaired.
+    assert cj.is_mass_citation_downgrade(downgraded[:1], repairs[:1]) is False
+    # A survivor anywhere in the set means the citations were not wholesale bad.
+    survivor = downgraded + [cj.Verdict(claim_id="c2", covered=True, turns=[1])]
+    assert cj.is_mass_citation_downgrade(survivor, repairs) is False
+    # Dropped-but-not-downgraded repairs are not the signature either.
+    dropped_only = [cj.CitationRepair(claim_id="c1", dropped_turns=[9], downgraded=False)]
+    assert cj.is_mass_citation_downgrade(downgraded, dropped_only) is False
+
+
 def test_valid_citations_are_accepted():
     client = _ScriptedClient([_RichResponse(_RF_GOOD)])
     verdict = cj.judge_coverage(_RF_CLAIMS, _RF_TRANSCRIPT, client=client)

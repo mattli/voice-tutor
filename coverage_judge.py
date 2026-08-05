@@ -283,6 +283,34 @@ class InvalidTurnCitationError(VerdictParseError):
     """
 
 
+class MassCitationDowngradeError(VerdictParseError):
+    """EVERY claim the model asserted coverage for was downgraded by repair.
+
+    The per-claim repair in :func:`repair_turn_citations` contains the damage of
+    ONE miscited claim. But when the model's citations are in a DIFFERENT INDEX
+    SPACE than the transcript it was given (1-based instead of 0-based, line
+    numbers, ids carried over from another rendering), every citation is bogus,
+    every ``covered: true`` is downgraded, and the repair produces a
+    perfectly-shaped verdict set reading ZERO CLAIMS COVERED.
+
+    That is not a coverage number — it is a transport failure wearing one. And
+    because coverage is APPEND-ONLY (see ``coverage_store.write_sidecar``),
+    writing it makes the false zero PERMANENT: the session can never be
+    re-judged without an explicit ``--force``. A monotonic bar that can only be
+    corrected by hand is worse than no bar.
+
+    So this case is refused rather than repaired: a retryable parse error, which
+    the bounded retry re-issues once, and — if the second attempt does the same —
+    surfaces as a judge failure, i.e. NO COVERAGE DATA for that session. No data
+    is recoverable later; a permanent wrong zero is not.
+
+    Deliberately narrow: it fires only when SEVERAL claims
+    (:data:`MIN_MASS_DOWNGRADE_CLAIMS`) were downgraded AND nothing survived. A
+    model that honestly finds nothing covered downgrades nothing and is
+    unaffected, and a single miscited claim is still repaired, not refused.
+    """
+
+
 class VerdictTruncatedError(Exception):
     """The model's reply was cut off at the output token cap (max_tokens).
 
@@ -535,6 +563,13 @@ def repair_turn_citations(
     Returns ``(verdicts, repairs)``; ``repairs`` is empty when nothing was
     touched, and is persisted into the verdict object so a repaired number is
     auditable rather than silent. Pure: no I/O, no model call.
+
+    Scope limit: repair contains the damage of a FEW bad citations. The case
+    where EVERY coverage claim is downgraded is a different failure (an
+    index-space mismatch, not a miscitation) and is refused by
+    :func:`judge_coverage` via :func:`is_mass_citation_downgrade` rather than
+    repaired — a verdict set repaired down to zero would otherwise be persisted
+    as a permanent false zero under the append-only policy.
     """
     valid = set(valid_turn_indices)
     out: list[Verdict] = []
@@ -560,6 +595,37 @@ def repair_turn_citations(
             )
         )
     return out, repairs
+
+
+# How many independently-downgraded claims it takes to call a verdict set an
+# index-space mismatch rather than a miscitation. TWO, not one: a single claim
+# whose citation was bogus is exactly the case per-claim repair exists to
+# contain, and one asserted-then-downgraded claim carries no evidence
+# distinguishing "the model slipped on its only coverage claim" from "every
+# index is wrong". Two or more claims independently citing indices that all fail,
+# with nothing left standing, is the corroborated signature.
+MIN_MASS_DOWNGRADE_CLAIMS = 2
+
+
+def is_mass_citation_downgrade(
+    verdicts: list[Verdict], repairs: list[CitationRepair]
+) -> bool:
+    """True when repair downgraded EVERY coverage claim the model made, en masse.
+
+    The signature of a citation INDEX-SPACE mismatch rather than a one-off
+    miscitation: at least :data:`MIN_MASS_DOWNGRADE_CLAIMS` claims were
+    downgraded, and after repair not a single claim remains covered. See
+    :class:`MassCitationDowngradeError` for why that case must fail loudly
+    instead of being persisted as a permanent zero.
+
+    Pure. Returns False when nothing was downgraded (including the ordinary
+    "model honestly found nothing covered" case, which downgrades nothing), and
+    False for a single downgraded claim — repair contains that one, by design.
+    """
+    downgraded = sum(1 for r in repairs if r.downgraded)
+    if downgraded < MIN_MASS_DOWNGRADE_CLAIMS:
+        return False
+    return not any(v.covered for v in verdicts)
 
 
 def verify_claim_id_coverage(present_ids, expected_ids) -> None:
@@ -1110,6 +1176,19 @@ def judge_coverage(
         try:
             text = _extract_text(response)
             parsed = parse_verdicts_text_detailed(text, expected_ids, valid_turns)
+            # A wholesale citation failure (every coverage claim downgraded) is
+            # NOT a coverage number — see MassCitationDowngradeError. Raised
+            # inside the try so it retries within the bound like any other
+            # malformed output, and, if the retry fails too, degrades to no
+            # coverage rather than persisting a permanent zero.
+            if is_mass_citation_downgrade(parsed.verdicts, parsed.repairs):
+                raise MassCitationDowngradeError(
+                    f"all {sum(1 for r in parsed.repairs if r.downgraded)} coverage "
+                    "claim(s) were downgraded because none of their cited turns exist "
+                    f"in the judged transcript ({len(valid_turns)} turns, indices "
+                    f"{valid_turns[:1]}..{valid_turns[-1:]}) — the citations are in a "
+                    "different index space, not a per-claim miscitation"
+                )
         except VerdictParseError as e:
             # Malformed output (invalid JSON, truncated/short verdict list, an
             # unknown/duplicate/missing claim id, or an unsupported turn

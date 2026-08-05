@@ -52,6 +52,26 @@ def _artifact_row(**over):
     return row
 
 
+def _coverage_row(**over):
+    # The post-session claim-coverage judge (bot.py teardown, 2026-08-04). Same
+    # Haiku token shape as an artifact row, no timestamp of its own.
+    row = {
+        "kind": "coverage",
+        "session_id": "s1",
+        "user_id": "matt",
+        "document_id": "doc-A",
+        "model": "claude-haiku-4-5-20251001",
+        "calls": 1,
+        "status": "ok",
+        "usage_complete": True,
+        "input_tokens": 9000,
+        "output_tokens": 2500,
+        "cost_usd": 0.0215,
+    }
+    row.update(over)
+    return row
+
+
 def _legacy_row(**over):
     # Legacy rows have no "kind"; carry tts_credits (not tts_chars) and no
     # post_session/artifact fields.
@@ -102,6 +122,45 @@ def test_session_plus_artifact_haiku_accumulates():
     # 50 (post-session) + 576 (artifact) input; 30 + 100 output.
     assert t.haiku_tokens.uncached_input == 626
     assert t.haiku_tokens.output == 130
+
+
+def test_coverage_row_fills_haiku_bucket():
+    # An UNRECOGNIZED kind contributes nothing, so a real billed judge call would
+    # sit in the ledger while reconciliation reported the provider ahead of us —
+    # a phantom "logging error" of exactly the shape this tool exists to tell
+    # apart from real drift. The coverage judge must be summed like any other
+    # Haiku spender.
+    t = rc.summarize_ledger([_coverage_row()])
+    assert t.haiku_tokens.uncached_input == 9000
+    assert t.haiku_tokens.output == 2500
+    assert t.coverage_rows == 1
+    assert t.recorded_anthropic_usd == 0.0215
+    assert t.live_tokens.total() == 0
+
+
+def test_a_FAILED_coverage_row_still_counts_its_burned_tokens():
+    # A failed judge writes a row for the attempts it burned. That spend is real
+    # and the provider bills it, so dropping it would under-count precisely when
+    # spend spiked.
+    t = rc.summarize_ledger([_coverage_row(status="failed", calls=2, input_tokens=18000)])
+    assert t.haiku_tokens.uncached_input == 18000
+    assert t.coverage_rows == 1
+
+
+def test_session_artifact_and_coverage_haiku_all_accumulate():
+    t = rc.summarize_ledger([_session_row(), _artifact_row(), _coverage_row()])
+    assert t.haiku_tokens.uncached_input == 50 + 576 + 9000
+    assert t.haiku_tokens.output == 30 + 100 + 2500
+
+
+def test_coverage_joins_session_time_for_range():
+    # No timestamp of its own: like an artifact, it is in-range iff its session is.
+    rows = [_session_row(), _coverage_row()]
+    inside = rc.summarize_ledger(rows, datetime(2026, 4, 1), datetime(2026, 5, 1))
+    assert inside.coverage_rows == 1
+    outside = rc.summarize_ledger(rows, datetime(2026, 5, 1), datetime(2026, 6, 1))
+    assert outside.coverage_rows == 0
+    assert outside.haiku_tokens.total() == 0
 
 
 def test_legacy_row_counts_as_session_for_live_tokens():

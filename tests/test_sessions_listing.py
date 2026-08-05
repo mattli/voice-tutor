@@ -403,7 +403,15 @@ def test_a_crafted_session_id_cannot_probe_another_users_transcript(cost_log_tmp
     # The probe path is built from the AUTHENTICATED user_id, and the session id
     # is collapsed to one component, so traversal can't answer the question
     # about someone else's file.
+    #
+    # SARAH'S OWN DIRECTORY MUST EXIST or this test passes vacuously: pathlib +
+    # os.stat only traverse ".." through a directory that is really there, so
+    # with no transcripts/sarah/ the probe returns False whether or not the guard
+    # is present, and the assertion proves nothing (CLAUDE.md, "a traversal test
+    # must materialize it"). Verified 2026-08-04: with the guard removed and this
+    # seed line deleted the test still passes; with the seed line it fails.
     _seed_transcript("matt", "secret")
+    _seed_transcript("sarah", "own-session")
     assert sessions.session_belongs_to("sarah", "../matt/secret") is False
 
 

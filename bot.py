@@ -909,6 +909,29 @@ async def bot(runner_args):
             print(f"[coverage] judge raised, skipping coverage: {e}", file=sys.stderr, flush=True)
             return
 
+        # LEDGER FIRST, in its OWN try. The spend is already incurred by this
+        # point and is the one fact that cannot be reconstructed later; the
+        # sidecar can (re-judge with --force). Writing it second, inside the same
+        # try as the sidecar, meant a failing sidecar write also swallowed the
+        # cost row — losing the record precisely in the failure case the
+        # write-either-way rule exists for.
+        try:
+            # Tokens are omitted from cost_row when NO call reported them (the
+            # partial-measurement rule), so only price what was actually
+            # observed: a missing count must not become a confident $0.0000 in
+            # the ledger. usage_complete on the row says which case this is.
+            if "input_tokens" in cost_row or "output_tokens" in cost_row:
+                cost = (
+                    cost_row.get("input_tokens", 0) / 1_000_000 * PRICE_ANTHROPIC_HAIKU_INPUT_PER_MTOK
+                    + cost_row.get("output_tokens", 0) / 1_000_000 * PRICE_ANTHROPIC_HAIKU_OUTPUT_PER_MTOK
+                )
+                cost_row["cost_usd"] = round(cost, 4)
+            SESSION_LOG_JSONL_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with SESSION_LOG_JSONL_PATH.open("a") as f:
+                f.write(json.dumps(cost_row) + "\n")
+        except Exception as e:  # noqa: BLE001 - coverage never breaks teardown
+            print(f"[coverage] ledger write failed: {e}", file=sys.stderr, flush=True)
+
         try:
             if sidecar is not None:
                 # No overwrite= here, deliberately: coverage is append-only, so a
@@ -934,19 +957,8 @@ async def bot(runner_args):
                     f"[coverage] judge failed: {cost_row.get('error')}",
                     file=sys.stderr, flush=True,
                 )
-            # The ledger row is written EITHER WAY: a failed run that burned
-            # attempts is exactly when spend spiked, and recording it only on
-            # success drops the cost precisely when it mattered.
-            cost = (
-                cost_row.get("input_tokens", 0) / 1_000_000 * PRICE_ANTHROPIC_HAIKU_INPUT_PER_MTOK
-                + cost_row.get("output_tokens", 0) / 1_000_000 * PRICE_ANTHROPIC_HAIKU_OUTPUT_PER_MTOK
-            )
-            cost_row["cost_usd"] = round(cost, 4)
-            SESSION_LOG_JSONL_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with SESSION_LOG_JSONL_PATH.open("a") as f:
-                f.write(json.dumps(cost_row) + "\n")
         except Exception as e:  # noqa: BLE001 - coverage never breaks teardown
-            print(f"[coverage] sidecar/ledger write failed: {e}", file=sys.stderr, flush=True)
+            print(f"[coverage] sidecar write failed: {e}", file=sys.stderr, flush=True)
 
     async def save_transcript():
         if not turns:
@@ -1004,140 +1016,152 @@ async def bot(runner_args):
             # exactly what this restructure exists to parallelise.
             await asyncio.sleep(0)
 
-        summary = usage.summary(duration_sec)
+        # TRY/FINALLY, not a plain sequence. Everything below is fast, local
+        # work — but if any of it raises (a full disk on .usage.json or
+        # cost-log.md, an OSError in append_to_memory), the await loop at the
+        # end is skipped, and the two background tasks are then referenced
+        # ONLY by this dead frame's local list — the exact weak-reference GC
+        # hazard noted below, now with in-flight model calls to destroy. It
+        # would also skip the caller's `await task.cancel()`, leaving the
+        # pipeline running. The finally makes awaiting them unconditional.
+        try:
+            summary = usage.summary(duration_sec)
 
-        # Run post-session Haiku calls before finalizing the cost log so their
-        # tokens roll into the row. They were previously off-the-books — small
-        # (~$0.025/session) but unaccounted for vs the Anthropic dashboard.
-        post_input = 0
-        post_output = 0
-        if has_min_user_turns(turns, MIN_USER_TURNS):
-            u = generate_session_summary(user_id, stem, transcript)
-            if u:
-                post_input += u["input_tokens"]
-                post_output += u["output_tokens"]
-            summary_path = user_tx / f"{stem}.summary.md"
-            if summary_path.exists():
-                append_to_memory(user_id, transcript, summary_path.read_text())
+            # Run post-session Haiku calls before finalizing the cost log so their
+            # tokens roll into the row. They were previously off-the-books — small
+            # (~$0.025/session) but unaccounted for vs the Anthropic dashboard.
+            post_input = 0
+            post_output = 0
+            if has_min_user_turns(turns, MIN_USER_TURNS):
+                u = generate_session_summary(user_id, stem, transcript)
+                if u:
+                    post_input += u["input_tokens"]
+                    post_output += u["output_tokens"]
+                summary_path = user_tx / f"{stem}.summary.md"
+                if summary_path.exists():
+                    append_to_memory(user_id, transcript, summary_path.read_text())
 
-        if has_min_user_turns(turns, MIN_USER_TURNS):
-            u = generate_session_analysis(
-                user_id,
-                stem,
-                transcript,
-                summary,
-                usage.tool_calls,
-                session_start,
-                study_meta["session_id"] if study_meta else None,
+            if has_min_user_turns(turns, MIN_USER_TURNS):
+                u = generate_session_analysis(
+                    user_id,
+                    stem,
+                    transcript,
+                    summary,
+                    usage.tool_calls,
+                    session_start,
+                    study_meta["session_id"] if study_meta else None,
+                )
+                if u:
+                    post_input += u["input_tokens"]
+                    post_output += u["output_tokens"]
+
+            post_cost = (
+                post_input / 1_000_000 * PRICE_ANTHROPIC_HAIKU_INPUT_PER_MTOK
+                + post_output / 1_000_000 * PRICE_ANTHROPIC_HAIKU_OUTPUT_PER_MTOK
             )
-            if u:
-                post_input += u["input_tokens"]
-                post_output += u["output_tokens"]
+            summary["post_session"] = {
+                "input_tokens": post_input,
+                "output_tokens": post_output,
+                "cost_usd": round(post_cost, 4),
+            }
+            summary["total_cost_usd"] = round(summary["total_cost_usd"] + post_cost, 4)
 
-        post_cost = (
-            post_input / 1_000_000 * PRICE_ANTHROPIC_HAIKU_INPUT_PER_MTOK
-            + post_output / 1_000_000 * PRICE_ANTHROPIC_HAIKU_OUTPUT_PER_MTOK
-        )
-        summary["post_session"] = {
-            "input_tokens": post_input,
-            "output_tokens": post_output,
-            "cost_usd": round(post_cost, 4),
-        }
-        summary["total_cost_usd"] = round(summary["total_cost_usd"] + post_cost, 4)
-
-        (user_tx / f"{stem}.usage.json").write_text(json.dumps(summary, indent=2))
-        mins = summary["session_duration_sec"] / 60
-        line = (
-            f"Session: {mins:.1f}min · {len(turns)} turns · "
-            f"${summary['total_cost_usd']:.3f} "
-            f"(llm ${summary['llm']['cost_usd']:.3f} · "
-            f"stt ${summary['stt']['cost_usd']:.3f} · "
-            f"tts ${summary['tts']['cost_usd']:.3f} · "
-            f"post ${summary['post_session']['cost_usd']:.3f})"
-        )
-        print(line, flush=True)
-
-        # The "LLM" column in cost-log.md now means total LLM spend (live Sonnet
-        # + post-session Haiku) to match what the Anthropic dashboard reports.
-        # JSONL keeps the breakdown.
-        llm_total = summary["llm"]["cost_usd"] + summary["post_session"]["cost_usd"]
-
-        COST_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if not COST_LOG_PATH.exists():
-            COST_LOG_PATH.write_text(
-                "# Voice Tutor — Cost Log\n\n"
-                "One row per session. Costs are computed from ground-truth usage\n"
-                "(TTS audio bytes, LLM token counts, Deepgram streamed minutes).\n"
-                "Rates last verified 2026-04-15 against provider pricing pages.\n"
-                "The LLM column includes both live Sonnet and post-session Haiku\n"
-                "(matching the Anthropic dashboard); see `session-log.jsonl` for the\n"
-                "live-vs-post-session breakdown.\n"
-                "Per-session raw usage is logged to `session-log.jsonl` for auditing\n"
-                "(starting 2026-04-15 — earlier sessions have no raw-usage sidecar).\n\n"
-                "| Session start | Duration | Turns | Total | LLM | STT | TTS |\n"
-                "|---|---|---|---|---|---|---|\n"
+            (user_tx / f"{stem}.usage.json").write_text(json.dumps(summary, indent=2))
+            mins = summary["session_duration_sec"] / 60
+            line = (
+                f"Session: {mins:.1f}min · {len(turns)} turns · "
+                f"${summary['total_cost_usd']:.3f} "
+                f"(llm ${summary['llm']['cost_usd']:.3f} · "
+                f"stt ${summary['stt']['cost_usd']:.3f} · "
+                f"tts ${summary['tts']['cost_usd']:.3f} · "
+                f"post ${summary['post_session']['cost_usd']:.3f})"
             )
-        row = (
-            f"| {session_start.strftime('%Y-%m-%d %H:%M')} "
-            f"| {mins:.1f} min "
-            f"| {len(turns)} "
-            f"| ${summary['total_cost_usd']:.3f} "
-            f"| ${llm_total:.3f} "
-            f"| ${summary['stt']['cost_usd']:.3f} "
-            f"| ${summary['tts']['cost_usd']:.3f} |\n"
-        )
-        with COST_LOG_PATH.open("a") as f:
-            f.write(row)
+            print(line, flush=True)
 
-        jsonl_entry = {
-            "kind": "session",
-            "user_id": user_id,
-            "session_id": session_start.strftime("%Y-%m-%dT%H%M%S"),
-            "session_start": session_start.isoformat(),
-            "session_end": session_end.isoformat(),
-            "session_duration_sec": summary["session_duration_sec"],
-            "turns": len(turns),
-            "tts_chars": summary["tts"]["chars"],
-            "tts_audio_sec_observed": summary["tts"]["audio_sec_observed"],
-            "stt_audio_sec_observed": summary["stt"]["audio_sec_observed"],
-            "stt_minutes_billed": summary["stt"]["minutes"],
-            "llm_uncached_input_tokens": summary["llm"]["uncached_input_tokens"],
-            "llm_cache_read_tokens": summary["llm"]["cache_read_tokens"],
-            "llm_cache_write_tokens": summary["llm"]["cache_write_tokens"],
-            "llm_output_tokens": summary["llm"]["output_tokens"],
-            "post_session_input_tokens": post_input,
-            "post_session_output_tokens": post_output,
-            "cost_llm_usd": summary["llm"]["cost_usd"],
-            "cost_stt_usd": summary["stt"]["cost_usd"],
-            "cost_tts_usd": summary["tts"]["cost_usd"],
-            "cost_post_session_usd": summary["post_session"]["cost_usd"],
-            "cost_total_usd": summary["total_cost_usd"],
-            "prompt_hash": prompt_hash,
-            "tool_calls": usage.tool_calls,
-        }
-        if study_meta:
-            jsonl_entry["session_id"] = study_meta["session_id"]
-            jsonl_entry["mode"] = "study"
-            jsonl_entry["document_id"] = study_meta["document_id"]
-        with SESSION_LOG_JSONL_PATH.open("a") as f:
-            f.write(json.dumps(jsonl_entry) + "\n")
+            # The "LLM" column in cost-log.md now means total LLM spend (live Sonnet
+            # + post-session Haiku) to match what the Anthropic dashboard reports.
+            # JSONL keeps the breakdown.
+            llm_total = summary["llm"]["cost_usd"] + summary["post_session"]["cost_usd"]
 
-        # Now — and only now, with every fast artifact already on disk — wait for
-        # the two background model calls started at the top. Awaiting them HERE
-        # rather than not at all is what keeps them from being orphaned: the
-        # caller cancels the pipeline task immediately after this function
-        # returns, and a pending bare task would be torn down with the process
-        # (asyncio also only holds a WEAK reference to a running task, so an
-        # un-awaited one can be garbage-collected mid-flight).
-        #
-        # Each task already contains its own failure handling and must never
-        # break teardown, so a raise here is caught and logged, not propagated —
-        # every artifact above is already written by this point.
-        for task_ in background:
-            try:
-                await task_
-            except Exception as e:  # noqa: BLE001 - background work never breaks teardown
-                print(f"[teardown] background task failed: {e}", file=sys.stderr, flush=True)
+            COST_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            if not COST_LOG_PATH.exists():
+                COST_LOG_PATH.write_text(
+                    "# Voice Tutor — Cost Log\n\n"
+                    "One row per session. Costs are computed from ground-truth usage\n"
+                    "(TTS audio bytes, LLM token counts, Deepgram streamed minutes).\n"
+                    "Rates last verified 2026-04-15 against provider pricing pages.\n"
+                    "The LLM column includes both live Sonnet and post-session Haiku\n"
+                    "(matching the Anthropic dashboard); see `session-log.jsonl` for the\n"
+                    "live-vs-post-session breakdown.\n"
+                    "Per-session raw usage is logged to `session-log.jsonl` for auditing\n"
+                    "(starting 2026-04-15 — earlier sessions have no raw-usage sidecar).\n\n"
+                    "| Session start | Duration | Turns | Total | LLM | STT | TTS |\n"
+                    "|---|---|---|---|---|---|---|\n"
+                )
+            row = (
+                f"| {session_start.strftime('%Y-%m-%d %H:%M')} "
+                f"| {mins:.1f} min "
+                f"| {len(turns)} "
+                f"| ${summary['total_cost_usd']:.3f} "
+                f"| ${llm_total:.3f} "
+                f"| ${summary['stt']['cost_usd']:.3f} "
+                f"| ${summary['tts']['cost_usd']:.3f} |\n"
+            )
+            with COST_LOG_PATH.open("a") as f:
+                f.write(row)
+
+            jsonl_entry = {
+                "kind": "session",
+                "user_id": user_id,
+                "session_id": session_start.strftime("%Y-%m-%dT%H%M%S"),
+                "session_start": session_start.isoformat(),
+                "session_end": session_end.isoformat(),
+                "session_duration_sec": summary["session_duration_sec"],
+                "turns": len(turns),
+                "tts_chars": summary["tts"]["chars"],
+                "tts_audio_sec_observed": summary["tts"]["audio_sec_observed"],
+                "stt_audio_sec_observed": summary["stt"]["audio_sec_observed"],
+                "stt_minutes_billed": summary["stt"]["minutes"],
+                "llm_uncached_input_tokens": summary["llm"]["uncached_input_tokens"],
+                "llm_cache_read_tokens": summary["llm"]["cache_read_tokens"],
+                "llm_cache_write_tokens": summary["llm"]["cache_write_tokens"],
+                "llm_output_tokens": summary["llm"]["output_tokens"],
+                "post_session_input_tokens": post_input,
+                "post_session_output_tokens": post_output,
+                "cost_llm_usd": summary["llm"]["cost_usd"],
+                "cost_stt_usd": summary["stt"]["cost_usd"],
+                "cost_tts_usd": summary["tts"]["cost_usd"],
+                "cost_post_session_usd": summary["post_session"]["cost_usd"],
+                "cost_total_usd": summary["total_cost_usd"],
+                "prompt_hash": prompt_hash,
+                "tool_calls": usage.tool_calls,
+            }
+            if study_meta:
+                jsonl_entry["session_id"] = study_meta["session_id"]
+                jsonl_entry["mode"] = "study"
+                jsonl_entry["document_id"] = study_meta["document_id"]
+            with SESSION_LOG_JSONL_PATH.open("a") as f:
+                f.write(json.dumps(jsonl_entry) + "\n")
+
+        finally:
+            # Now — and only now, with every fast artifact already on disk — wait for
+            # the two background model calls started at the top. Awaiting them HERE
+            # rather than not at all is what keeps them from being orphaned: the
+            # caller cancels the pipeline task immediately after this function
+            # returns, and a pending bare task would be torn down with the process
+            # (asyncio also only holds a WEAK reference to a running task, so an
+            # un-awaited one can be garbage-collected mid-flight).
+            #
+            # Each task already contains its own failure handling and must never
+            # break teardown, so a raise here is caught and logged, not propagated.
+            # On the normal path every artifact above is already on disk; on the
+            # exceptional path (the finally) this still runs, so in-flight work is
+            # awaited to completion instead of being dropped mid-call.
+            for task_ in background:
+                try:
+                    await task_
+                except Exception as e:  # noqa: BLE001 - background work never breaks teardown
+                    print(f"[teardown] background task failed: {e}", file=sys.stderr, flush=True)
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
@@ -1149,8 +1173,16 @@ async def bot(runner_args):
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
-        await save_transcript()
-        await task.cancel()
+        # save_transcript owns its own failure handling and awaits its background
+        # work in a finally — but an unexpected raise must still not cost the
+        # pipeline its shutdown. Cancelling is the one step that has to happen
+        # whatever teardown did, so it goes in a finally of its own.
+        try:
+            await save_transcript()
+        except Exception as e:  # noqa: BLE001 - teardown never blocks the shutdown
+            print(f"[teardown] save_transcript failed: {e}", file=sys.stderr, flush=True)
+        finally:
+            await task.cancel()
 
     runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
     await runner.run(task)
