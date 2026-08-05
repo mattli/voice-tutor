@@ -964,32 +964,45 @@ async def bot(runner_args):
 
         duration_sec = (session_end - session_start).total_seconds()
 
-        # The RECAP is started FIRST — before the judge, the summary, and the
-        # analysis — because the user is watching for it: the client polls for
-        # 60s (30 x 2s in static/study.html) and then gives up with "Recap didn't
-        # generate within 60 seconds."
+        # THE TWO LONG MODEL CALLS START HERE, CONCURRENTLY, AND NOTHING WAITS ON
+        # THEM. Both the recap and the coverage judge are minutes-scale work that
+        # nothing downstream depends on, so running either as a blocking STEP
+        # makes every artifact behind it late. The user is watching: the client
+        # polls for 60s (30 x 2s in static/study.html) and then gives up, showing
+        # "Recap didn't generate" and an unfilled diagnostics panel.
         #
-        # It is fire-and-forget and awaits its own model call in a thread, so
-        # starting it here lets it run CONCURRENTLY with everything below rather
-        # than queueing behind it. Nothing downstream depends on it; the ordering
-        # was always incidental, and while it sat last it inherited the latency of
-        # every step before it (measured 2026-08-04: adding a 51s judge ahead of
-        # it pushed the recap to 74s and past the client's timeout).
+        # Measured on real sessions (2026-08-04), both regressions came from
+        # ordering alone, not from the work itself:
+        #   * judge awaited BEFORE the recap  -> recap at 74s, past the cap;
+        #   * judge awaited before summary/analysis -> those at 69s, also past it,
+        #     so cost + analysis never rendered.
+        # Started as tasks, the recap lands ~12s and summary/analysis/cost ~20s,
+        # while the 50s judge runs alongside instead of in front.
+        #
+        # Coverage still STARTS as early as it can be correct (the transcript is
+        # on disk, the claim map is in hand), which is what the hard-stop
+        # durability argument actually required — being early, not being blocking.
+        background: list[asyncio.Task] = []
         if study_meta:
-            asyncio.create_task(generate_artifact(
+            background.append(asyncio.create_task(generate_artifact(
                 user_id=user_id,
                 session_id=study_meta["session_id"],
                 study_meta=study_meta,
                 transcript=transcript,
                 duration_sec=duration_sec,
-            ))
-
-        # Coverage next, while the only inputs it needs (transcript + claim map)
-        # are freshly on hand — see run_coverage_judge. Gated on the same
-        # user-turn floor as summary/analysis: a session the user never spoke in
-        # has nothing to judge and should not be billed for a judge call.
+            )))
+        # Gated on the same user-turn floor as summary/analysis: a session the
+        # user never spoke in has nothing to judge and should not be billed.
         if study_meta and COVERAGE_JUDGE and has_min_user_turns(turns, MIN_USER_TURNS):
-            await run_coverage_judge(transcript)
+            background.append(asyncio.create_task(run_coverage_judge(transcript)))
+        if background:
+            # Yield ONCE so both tasks actually reach their first await — each
+            # hands its model call to a worker thread — BEFORE the summary and
+            # analysis calls below monopolise the event loop. Those two are
+            # synchronous and block the loop for ~15s; without this yield the
+            # tasks would not start until the loop is next free, re-serialising
+            # exactly what this restructure exists to parallelise.
+            await asyncio.sleep(0)
 
         summary = usage.summary(duration_sec)
 
@@ -1108,9 +1121,23 @@ async def bot(runner_args):
             jsonl_entry["document_id"] = study_meta["document_id"]
         with SESSION_LOG_JSONL_PATH.open("a") as f:
             f.write(json.dumps(jsonl_entry) + "\n")
-        # NOTE: the recap (generate_artifact) is deliberately NOT started here any
-        # more — it is kicked off at the TOP of this function so it does not
-        # inherit the latency of the judge/summary/analysis steps. See there.
+
+        # Now — and only now, with every fast artifact already on disk — wait for
+        # the two background model calls started at the top. Awaiting them HERE
+        # rather than not at all is what keeps them from being orphaned: the
+        # caller cancels the pipeline task immediately after this function
+        # returns, and a pending bare task would be torn down with the process
+        # (asyncio also only holds a WEAK reference to a running task, so an
+        # un-awaited one can be garbage-collected mid-flight).
+        #
+        # Each task already contains its own failure handling and must never
+        # break teardown, so a raise here is caught and logged, not propagated —
+        # every artifact above is already written by this point.
+        for task_ in background:
+            try:
+                await task_
+            except Exception as e:  # noqa: BLE001 - background work never breaks teardown
+                print(f"[teardown] background task failed: {e}", file=sys.stderr, flush=True)
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
