@@ -952,14 +952,36 @@ async def bot(runner_args):
         }
         (user_tx / f"{stem}.json").write_text(json.dumps(transcript, indent=2))
 
-        # Coverage first, while the only inputs it needs (transcript + claim map)
+        duration_sec = (session_end - session_start).total_seconds()
+
+        # The RECAP is started FIRST — before the judge, the summary, and the
+        # analysis — because the user is watching for it: the client polls for
+        # 60s (30 x 2s in static/study.html) and then gives up with "Recap didn't
+        # generate within 60 seconds."
+        #
+        # It is fire-and-forget and awaits its own model call in a thread, so
+        # starting it here lets it run CONCURRENTLY with everything below rather
+        # than queueing behind it. Nothing downstream depends on it; the ordering
+        # was always incidental, and while it sat last it inherited the latency of
+        # every step before it (measured 2026-08-04: adding a 51s judge ahead of
+        # it pushed the recap to 74s and past the client's timeout).
+        if study_meta:
+            asyncio.create_task(generate_artifact(
+                user_id=user_id,
+                session_id=study_meta["session_id"],
+                study_meta=study_meta,
+                transcript=transcript,
+                duration_sec=duration_sec,
+            ))
+
+        # Coverage next, while the only inputs it needs (transcript + claim map)
         # are freshly on hand — see run_coverage_judge. Gated on the same
         # user-turn floor as summary/analysis: a session the user never spoke in
         # has nothing to judge and should not be billed for a judge call.
         if study_meta and COVERAGE_JUDGE and has_min_user_turns(turns, MIN_USER_TURNS):
             await run_coverage_judge(transcript)
 
-        summary = usage.summary((session_end - session_start).total_seconds())
+        summary = usage.summary(duration_sec)
 
         # Run post-session Haiku calls before finalizing the cost log so their
         # tokens roll into the row. They were previously off-the-books — small
@@ -1076,15 +1098,9 @@ async def bot(runner_args):
             jsonl_entry["document_id"] = study_meta["document_id"]
         with SESSION_LOG_JSONL_PATH.open("a") as f:
             f.write(json.dumps(jsonl_entry) + "\n")
-
-        if study_meta:
-            asyncio.create_task(generate_artifact(
-                user_id=user_id,
-                session_id=study_meta["session_id"],
-                study_meta=study_meta,
-                transcript=transcript,
-                duration_sec=summary["session_duration_sec"],
-            ))
+        # NOTE: the recap (generate_artifact) is deliberately NOT started here any
+        # more — it is kicked off at the TOP of this function so it does not
+        # inherit the latency of the judge/summary/analysis steps. See there.
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
