@@ -376,6 +376,45 @@ def test_session_belongs_to(cost_log_tmp):
     assert sessions.session_belongs_to("matt", "missing") is False
 
 
+def _seed_transcript(user_id, session_id):
+    """Write a transcript where bot.py's teardown writes it (first, per-user)."""
+    d = sessions.TRANSCRIPTS_DIR / user_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{session_id}.json").write_text('{"turns": []}')
+
+
+def test_ownership_holds_BEFORE_the_ledger_row_is_written(cost_log_tmp):
+    # The ledger row is the LAST thing teardown writes — after the coverage
+    # judge, the summary, and the analysis. Keying ownership on it made the
+    # /telemetry composite 404 for the whole of teardown, so the ended view
+    # polled 60s and reported "Recap didn't generate" while the recap had been
+    # on disk since ~5s (observed 2026-08-04). The transcript lands first and is
+    # itself the ownership fact.
+    _seed_transcript("matt", "in-flight")
+    assert sessions.session_belongs_to("matt", "in-flight") is True
+
+
+def test_a_transcript_proves_ownership_only_for_ITS_OWN_user(cost_log_tmp):
+    _seed_transcript("matt", "s1")
+    assert sessions.session_belongs_to("sarah", "s1") is False
+
+
+def test_a_crafted_session_id_cannot_probe_another_users_transcript(cost_log_tmp):
+    # The probe path is built from the AUTHENTICATED user_id, and the session id
+    # is collapsed to one component, so traversal can't answer the question
+    # about someone else's file.
+    _seed_transcript("matt", "secret")
+    assert sessions.session_belongs_to("sarah", "../matt/secret") is False
+
+
+def test_the_ledger_still_answers_when_no_transcript_exists(cost_log_tmp):
+    # Fallback intact: a session whose transcript was never written (user never
+    # spoke) or has since been archived is still owned per the ledger.
+    _seed_session(cost_log_tmp, session_id="no-tx", document_id="d", user_id="matt")
+    assert sessions.session_belongs_to("matt", "no-tx") is True
+    assert sessions.session_belongs_to("sarah", "no-tx") is False
+
+
 # --------------------------------------------------------------------------- #
 # Sprint 2 — per-user session listing on a SHARED document id                  #
 #                                                                              #

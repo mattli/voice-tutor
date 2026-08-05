@@ -334,6 +334,11 @@ def cost_log_tmp(tmp_path, monkeypatch):
 
     ledger = tmp_path / "session-log.jsonl"
     monkeypatch.setattr(sessions, "SESSION_LOG_JSONL_PATH", ledger)
+    # session_belongs_to also probes the per-user TRANSCRIPT tree (a transcript in
+    # the user's own namespace IS the ownership fact, and lands far earlier in
+    # teardown than the ledger row). Redirect it too, or these tests would read
+    # the real ~/.voice-tutor/transcripts and stop being hermetic.
+    monkeypatch.setattr(sessions, "TRANSCRIPTS_DIR", tmp_path / "transcripts")
 
     yield ledger
 

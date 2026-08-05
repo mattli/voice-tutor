@@ -23,6 +23,11 @@ SESSION_LOG_JSONL_PATH = (
     Path.home() / "second-brain" / "products" / "voice-tutor" / "validation" / "session-log.jsonl"
 )
 
+# Per-user transcript root, mirroring session_state.TRANSCRIPTS_DIR. Defined
+# LOCALLY (not imported) so this module's import closure stays stdlib+documents,
+# and read at CALL time so a test can monkeypatch it.
+TRANSCRIPTS_DIR = Path.home() / ".voice-tutor" / "transcripts"
+
 
 def list_study_sessions(user_id: str) -> list[dict]:
     """Return completed study sessions for ``user_id`` only, newest first.
@@ -93,7 +98,39 @@ MATT_ONLY_USER = "matt"
 
 
 def session_belongs_to(user_id: str, session_id: str) -> bool:
-    """True iff a session row with this session_id carries this user_id."""
+    """True iff ``session_id`` is ``user_id``'s session.
+
+    TRANSCRIPT FIRST, ledger second. The transcript is written at the very START
+    of teardown and lives in the user's OWN namespace
+    (``TRANSCRIPTS_DIR/<user_id>/<session_id>.json``), so its presence there is
+    itself the ownership fact — and the path is built from the AUTHENTICATED
+    ``user_id``, so it can only ever prove membership of that user's directory.
+
+    The ledger row, by contrast, is written at the very END of teardown, after
+    the coverage judge, the summary, and the analysis. Keying ownership on it
+    made this check — and therefore the whole `/telemetry` composite the ended
+    view polls — return "not found" for the entire duration of teardown. The
+    frontend polls for 60s and then reports "Recap didn't generate", so a slow
+    teardown presented as a BROKEN RECAP even though every artifact had landed.
+    Observed 2026-08-04: with the coverage judge in the chain the ledger row
+    arrived at ~66s, so all 30 polls 404'd while the recap had been on disk
+    since 5s.
+
+    The ledger scan is kept as the fallback for sessions whose transcript is
+    absent (never written because the user never spoke, or since archived), so
+    this only ever ADDS true results — it cannot make a previously-authorized
+    session unauthorized.
+
+    Both ids are collapsed to a single path component before the probe, so a
+    crafted ``session_id`` cannot escape the user's directory and answer this
+    question about someone else's file.
+    """
+    safe_user = Path(str(user_id)).name
+    safe_session = Path(str(session_id)).name
+    if safe_user and safe_session:
+        if (TRANSCRIPTS_DIR / safe_user / f"{safe_session}.json").exists():
+            return True
+
     path = SESSION_LOG_JSONL_PATH
     if not path.exists():
         return False
