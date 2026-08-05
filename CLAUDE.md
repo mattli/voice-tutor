@@ -121,3 +121,32 @@ authenticated request (`app.py:164` → `identity.resolve_cookie` → `load_regi
 unchanged), so a new token works **immediately, no restart**. `tokens.json` gates *every* tester,
 so a corrupt write 403s everyone — back it up, write atomically (temp + `os.replace`), preserve
 existing entries, and verify with `identity.resolve_user(token, load_registry())`.
+
+## `session-log.jsonl` has ROW KINDS, and an unknown kind is silently dropped (2026-08-05)
+
+The ledger is not homogeneous: rows carry `kind` — `session`, `artifact`, and now
+`coverage` — plus legacy rows with no `kind` at all. Every reader dispatches on it,
+and **the default branch is silence, not an error**: `reconcile_costs._row_kind`
+returns an unrecognized kind verbatim and `summarize_ledger` skips it ("Unknown
+kinds contribute nothing"); `cost_audit._classify_and_check_row` returns it
+unchecked. So adding a row kind that spends money and stopping at the writer
+produces a ledger that looks complete and totals that are quietly short — the
+provider then reads as ahead of us, which is exactly the phantom drift
+`reconcile_costs` exists to tell apart from real logging errors.
+
+**Adding a `kind` means updating its readers in the same change:**
+`reconcile_costs.py` (`_row_kind`, `filter_rows_by_local_range`,
+`summarize_ledger`, and `LedgerTotals`' row counters), `cost_audit.py`
+(cost-recompute branch), and any consumer that filters `kind == "session"`. A row
+with no timestamp of its own (artifact, coverage) must be joined to its session's
+`session_start` via `session_id` or it vanishes from every dated range. Same family
+as the filename-scheme rule above — caught 2026-08-05, when the coverage judge's
+`kind:"coverage"` rows carried real Haiku tokens no reconciliation counted, suite
+green throughout.
+
+**Related invariant — coverage sidecars are APPEND-ONLY, so wrong beats missing
+is FALSE here.** `coverage_store.write_sidecar` refuses to overwrite, which makes
+the accumulated bar monotonic but also makes any number it records permanent
+(only `backfill_coverage.py --force` can revise it). When the judge's output is
+suspect, the correct degradation is **no sidecar**, not a plausible one — see
+`coverage_judge.MassCitationDowngradeError`.
