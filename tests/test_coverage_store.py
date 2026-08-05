@@ -155,6 +155,44 @@ def test_no_percentage_is_stored_in_the_sidecar(store_dir):
     assert sidecar["verdicts"][0]["turns"] == [1]  # evidence IS stored
 
 
+def test_a_written_sidecar_is_never_silently_overwritten(store_dir):
+    # APPEND-ONLY POLICY. The judge is not perfectly reproducible (measured: a
+    # re-judge of an unchanged transcript varied by one claim at temperature 0),
+    # so a silent re-judge could make a user's progress bar go DOWN with no
+    # session having happened. The union is monotonic by construction instead.
+    first, _ = _judge()
+    path = cs.write_sidecar("matt", "sess-1", first)
+    assert path is not None
+
+    replacement = dict(first, covered_count=0, verdicts=[])
+    assert cs.write_sidecar("matt", "sess-1", replacement) is None, "must decline"
+    assert cs.load_sidecar("matt", "sess-1")["covered_count"] == 1, "original intact"
+
+
+def test_an_explicit_overwrite_is_the_one_sanctioned_re_judge(store_dir):
+    first, _ = _judge()
+    cs.write_sidecar("matt", "sess-1", first)
+    replacement = dict(first, covered_count=99)
+    assert cs.write_sidecar("matt", "sess-1", replacement, overwrite=True) is not None
+    assert cs.load_sidecar("matt", "sess-1")["covered_count"] == 99
+
+
+def test_a_reused_session_id_cannot_clobber_an_earlier_sessions_coverage(store_dir):
+    # session_id is CLIENT-SUPPLIED, so without the guard a reused or crafted id
+    # would silently destroy a real session's record and shrink the union.
+    original, _ = _judge()
+    cs.write_sidecar("matt", "sess-1", original)
+    before = cs.union_for_document("matt", "doc-A", "hash-A")
+
+    attacker = dict(original, covered_count=0, verdicts=[
+        {"claim_id": "c1", "covered": False, "turns": []},
+        {"claim_id": "c2", "covered": False, "turns": []},
+    ])
+    cs.write_sidecar("matt", "sess-1", attacker)   # same id, no overwrite=
+    after = cs.union_for_document("matt", "doc-A", "hash-A")
+    assert after["covered_ids"] == before["covered_ids"], "the union must not shrink"
+
+
 def test_an_interrupted_write_leaves_no_partial_sidecar(store_dir):
     sidecar, _ = _judge()
     cs.write_sidecar("matt", "sess-1", sidecar)

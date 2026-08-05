@@ -211,7 +211,13 @@ def main(argv=None) -> int:
             failed += 1
             print(f"  FAIL {user_id}/{session_id[:8]} — {cost_row.get('error')}")
             continue
-        cs.write_sidecar(user_id, session_id, sidecar)
+        # Coverage is append-only: write_sidecar refuses to clobber an existing
+        # record unless told to. --force is the sanctioned re-judge, and it is
+        # threaded through here rather than pre-checked only, so the policy is
+        # enforced at the writer even if the pre-check above is ever changed.
+        if cs.write_sidecar(user_id, session_id, sidecar, overwrite=args.force) is None:
+            print(f"  SKIP {user_id}/{session_id[:8]} — sidecar exists (use --force)")
+            continue
         judged += 1
         print(f"  ok   {user_id}/{session_id[:8]} doc {doc_id[:8]} — "
               f"{sidecar['covered_count']}/{sidecar['claims_total']} covered  ${usd:.3f}")

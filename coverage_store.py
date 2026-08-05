@@ -102,15 +102,41 @@ def build_sidecar(
     }
 
 
-def write_sidecar(user_id: str, session_id: str, sidecar: dict) -> Path:
-    """Persist ``sidecar`` to :func:`coverage_path`; return the path.
+def write_sidecar(
+    user_id: str, session_id: str, sidecar: dict, *, overwrite: bool = False
+) -> Path | None:
+    """Persist ``sidecar`` to :func:`coverage_path`; return the path, or None if skipped.
 
-    ATOMIC (temp file + ``os.replace``), mirroring ``claims.write_claims``: an
-    interrupted write must never leave a half-written sidecar, because the union
-    reader would then have to distinguish "corrupt" from "no coverage" on a
-    user-facing number. Creates the per-user directory if needed.
+    APPEND-ONLY BY POLICY. A written sidecar is a RECORD of what a session was
+    judged to have covered, and it is never silently re-judged: this function
+    refuses to overwrite an existing sidecar unless ``overwrite=True`` is passed
+    explicitly, returning ``None`` instead.
+
+    That makes the accumulated coverage number MONOTONIC BY CONSTRUCTION — the
+    union can only ever grow as sessions are added. It matters because the judge
+    is not perfectly reproducible (measured 2026-08-04: re-judging an unchanged
+    transcript at temperature 0 varied by one claim), so a silent re-judge could
+    make a user's progress bar go DOWN with no session having happened. A bar
+    that retreats reads as a broken product, and it would also quietly rewrite
+    the evidence an eval label was assigned against.
+
+    The guard lives HERE, at the single choke point every writer funnels
+    through, rather than at each call site — containment must not depend on
+    every caller remembering (the same principle as the path-traversal guards).
+    It also closes a real hole: ``session_id`` is client-supplied, so without
+    this a crafted or reused id would clobber a previous session's coverage.
+    ``overwrite=True`` is the one sanctioned way to re-judge (see
+    ``backfill_coverage.py --force``).
+
+    The write itself is ATOMIC (temp file + ``os.replace``), mirroring
+    ``claims.write_claims``: an interrupted write must never leave a half-written
+    sidecar, because the union reader would then have to distinguish "corrupt"
+    from "no coverage" on a user-facing number. Creates the per-user directory if
+    needed.
     """
     path = coverage_path(user_id, session_id)
+    if path.exists() and not overwrite:
+        return None
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")

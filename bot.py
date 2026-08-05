@@ -911,14 +911,24 @@ async def bot(runner_args):
 
         try:
             if sidecar is not None:
+                # No overwrite= here, deliberately: coverage is append-only, so a
+                # reused/crafted session_id cannot clobber an earlier session's
+                # record. write_sidecar returns None when it declines.
                 path = coverage_store.write_sidecar(
                     user_id, study_meta["session_id"], sidecar
                 )
-                print(
-                    f"[coverage] wrote {path} — "
-                    f"{sidecar['covered_count']}/{sidecar['claims_total']} claims covered",
-                    file=sys.stderr, flush=True,
-                )
+                if path is None:
+                    print(
+                        f"[coverage] a sidecar already exists for session "
+                        f"{study_meta['session_id']}; not overwriting",
+                        file=sys.stderr, flush=True,
+                    )
+                else:
+                    print(
+                        f"[coverage] wrote {path} — "
+                        f"{sidecar['covered_count']}/{sidecar['claims_total']} claims covered",
+                        file=sys.stderr, flush=True,
+                    )
             else:
                 print(
                     f"[coverage] judge failed: {cost_row.get('error')}",
