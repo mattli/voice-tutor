@@ -150,6 +150,47 @@ def session_belongs_to(user_id: str, session_id: str) -> bool:
     return False
 
 
+def coverage_judge_failed(user_id: str, session_id: str) -> bool:
+    """True iff the coverage judge is KNOWN to have failed for this session.
+
+    The ledger's ``kind="coverage"`` row is the only durable record that a judge
+    run finished at all, because a failed run writes NO sidecar — it is written
+    unconditionally by bot.py's teardown (the spend is real either way) and
+    carries ``status``. Reading it is what lets the ended view tell "still
+    judging" apart from "never coming", which are otherwise indistinguishable
+    from the outside: both are simply an absent sidecar.
+
+    Deliberately ONE-WAY. False means "no failure on record", which covers both
+    a run still in flight and a teardown that died before logging anything — so
+    a caller treats False as "keep waiting" and only ever stops early on
+    positive evidence. A missing or unreadable ledger therefore degrades to the
+    old behaviour (poll to the cap) rather than to a premature stop.
+
+    Note the row is written BEFORE the sidecar, so ``status="ok"`` can briefly
+    precede the file existing. Callers must check for the sidecar first and use
+    this only to explain its absence.
+    """
+    path = SESSION_LOG_JSONL_PATH
+    if not path.exists():
+        return False
+    try:
+        with path.open() as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(e, dict) or e.get("kind") != "coverage":
+                    continue
+                if e.get("session_id") != session_id or e.get("user_id") != user_id:
+                    continue
+                if e.get("status") != "ok":
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def can_view_machine_artifacts(user_id: str) -> bool:
     """Prompt + analysis + global cost-log are about the MACHINE, not the tester's
     learning. Only Matt may view them. (The prompt embeds the private claim map,

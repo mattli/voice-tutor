@@ -1696,12 +1696,22 @@
   // held done-condition, and nothing coverage-related is rendered at all. This
   // can never extend polling past MAX_POLL_ATTEMPTS; it only avoids finishing
   // early on a session whose coverage is still in flight.
+  // data.coverage_status is the settled-vs-still-coming signal: only 'pending'
+  // holds the poll open. Waiting on the ARTIFACT instead (coverage.session
+  // appearing) could never be satisfied by a judge that failed, so every
+  // failure ran all 30 polls — 60s of requests after the last artifact landed.
+  // A server that doesn't send the field at all falls back to the artifact
+  // test, so an older server degrades to the old behaviour rather than to a
+  // poll that stops before coverage arrives.
   function pollIsDone(data, isMatt) {
     const expectsSummary = !!data.expects_summary;
     const expectsCoverage = !!data.expects_coverage;
+    const coverageSettled = data.coverage_status !== undefined
+      ? data.coverage_status !== 'pending'
+      : !!(data.coverage && data.coverage.session);
     return !!(data.recap && data.cost && (!isMatt || data.has_prompt)
       && (!expectsSummary || (data.memory_append && (!isMatt || data.analysis)))
-      && (!expectsCoverage || (data.coverage && data.coverage.session)));
+      && (!expectsCoverage || coverageSettled));
   }
   // POLL_DONE_END
 
@@ -1812,6 +1822,13 @@
     };
   }
 
+  // While the judge is still running the server WITHHOLDS the accumulated total
+  // (coverage_status === 'pending'), so `cov` is null and nothing renders. That
+  // is deliberate: the total is a real number but it does not include the
+  // session just finished, and showing it under a bare "Coverage" heading on
+  // the screen you land on when you hang up reads as a claim about that
+  // session. When the judge fails the server releases the total instead, so a
+  // broken judge costs the delta, not the document's number.
   function renderCoverage(cov) {
     if (!cov) return;
     // A PAST session shows where the document stood when that session ended,

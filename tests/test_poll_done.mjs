@@ -63,17 +63,37 @@ assert.strictEqual(
 
 // Expected but not yet judged → keep polling (bounded by MAX_POLL_ATTEMPTS).
 assert.strictEqual(
-  pollIsDone({ recap: R, cost: C, has_prompt: false, expects_summary: false, expects_coverage: true, coverage: null }, false),
+  pollIsDone({ recap: R, cost: C, has_prompt: false, expects_summary: false, expects_coverage: true, coverage: null, coverage_status: 'pending' }, false),
   false, 'coverage expected, sidecar pending → not done');
 
-// The document total alone is not the session's coverage: the delta is what the
-// judge produces, so a block carrying only `total` must not end the poll.
+assert.strictEqual(
+  pollIsDone({ recap: R, cost: C, has_prompt: false, expects_summary: false, expects_coverage: true, coverage: { total: null, at_session: null, session: null }, coverage_status: 'ready' }, false),
+  true, 'coverage landed → done');
+
+// ── the judge FAILED: a settled outcome, not a slow one ──
+// The old condition waited for coverage.session to appear, which a failed judge
+// never produces — so every failure ran all 30 polls (60s of requests) after
+// the last artifact had already landed. 'failed' must end the poll immediately,
+// and the accumulated total is released with it (no delta, but a real number).
+assert.strictEqual(
+  pollIsDone({ recap: R, cost: C, has_prompt: false, expects_summary: false, expects_coverage: true, coverage: { total: { covered: 16, total: 63 }, at_session: null, session: null }, coverage_status: 'failed' }, false),
+  true, 'judge failed → done, never spins to the cap');
+
+// A pending status must hold the poll open even when a total is present —
+// during teardown the server withholds `total`, but a stale/odd payload that
+// still carries one must not be mistaken for a settled result.
+assert.strictEqual(
+  pollIsDone({ recap: R, cost: C, has_prompt: false, expects_summary: false, expects_coverage: true, coverage: { total: { covered: 16, total: 63 }, session: null }, coverage_status: 'pending' }, false),
+  false, 'pending with a total present → still not done');
+
+// Older server: no coverage_status field at all → falls back to the artifact
+// test, i.e. exactly the previous behaviour rather than a premature stop.
 assert.strictEqual(
   pollIsDone({ recap: R, cost: C, has_prompt: false, expects_summary: false, expects_coverage: true, coverage: { total: { covered: 16, total: 63 }, session: null } }, false),
-  false, 'accumulated total only → not done');
+  false, 'no coverage_status, delta missing → not done (legacy fallback)');
 
 assert.strictEqual(
   pollIsDone({ recap: R, cost: C, has_prompt: false, expects_summary: false, expects_coverage: true, coverage: { total: { covered: 16, total: 63 }, session: { covered: 7, new_claims: 4 } } }, false),
-  true, 'coverage landed → done');
+  true, 'no coverage_status, delta present → done (legacy fallback)');
 
-console.log('poll-done: all 11 cases passed');
+console.log('poll-done: all 15 cases passed');

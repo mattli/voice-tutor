@@ -74,6 +74,7 @@ def build_sidecar(
     verdict_obj: dict,
     claims_total: int,
     transcript_turns: int,
+    session_start: str | None = None,
 ) -> dict:
     """Assemble the sidecar envelope around one judge verdict object.
 
@@ -82,6 +83,12 @@ def build_sidecar(
     envelope adds the session/user/document identity a reader needs to find and
     filter it. ``covered_count`` is a convenience for humans reading the file —
     the authoritative number is always recomputed from ``verdicts``.
+
+    ``session_start`` is WHEN THE SESSION RAN, and it is a distinct field from
+    ``judged_at`` (when the judge ran) precisely because backfill makes the two
+    diverge. It is the key every historical read orders by; storing it here
+    makes a sidecar self-describing, and :func:`_session_time_of` falls back to
+    the transcript for sidecars written before this field existed.
     """
     verdicts = verdict_obj.get("verdicts", [])
     return {
@@ -94,6 +101,7 @@ def build_sidecar(
         "doc_id": verdict_obj.get("doc_id"),
         "claims_total": claims_total,
         "transcript_turns": transcript_turns,
+        "session_start": session_start,
         "judged_at": verdict_obj.get("judged_at"),
         "model": verdict_obj.get("model"),
         "judge_prompt_hash": verdict_obj.get("judge_prompt_hash"),
@@ -208,6 +216,90 @@ def iter_sidecars(user_id: str):
         yield data
 
 
+def _transcript_session_start(user_id: str, session_id: str) -> str:
+    """``session_start`` from the transcript beside a sidecar, or ``""``.
+
+    The retroactive half of :func:`_session_time_of`. Sidecars written before
+    the envelope carried ``session_start`` have no stamp of their own, but the
+    transcript they were judged FROM sits in the same directory under the same
+    stem and has always recorded it — so ordering is recoverable for every
+    sidecar that already exists, with no migration.
+    """
+    path = coverage_path(user_id, session_id).with_name(
+        f"{Path(str(session_id)).name or 'unnamed'}.json"
+    )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    value = data.get("session_start")
+    return value if isinstance(value, str) else ""
+
+
+def _session_time_of(user_id: str, sidecar: dict) -> str:
+    """When the session a sidecar records actually HAPPENED; ``""`` if unknown.
+
+    THE ORDERING KEY for every historical question this module answers, and
+    deliberately NOT ``judged_at``. ``judged_at`` is when the JUDGE RAN, which
+    equals session order only for sessions judged live at teardown:
+    ``backfill_coverage.py`` stamps every session it re-judges with the time of
+    the backfill, so a month-old session comes back claiming to be the newest
+    thing that ever happened. Ordering on it made a past session's meter show a
+    number that had nothing to do with that session (measured on live data
+    2026-08-06: a session whose true standing was 16/63 rendered as 1/63,
+    because five earlier sessions were backfilled the day AFTER it was judged).
+
+    ``session_start`` is also the field ``sessions.list_study_sessions`` sorts
+    the history list by, so the meter and the list it appears in are now keyed
+    on the same value and cannot disagree about what "earlier" means.
+
+    Prefers the sidecar's own stamp and falls back to the transcript. Note both
+    are NAIVE LOCAL timestamps while ``judged_at`` is UTC-with-offset — never
+    mix the two in one comparison; a missing value returns ``""`` (sorts oldest)
+    rather than falling back to ``judged_at``, which would silently compare a
+    naive string against an offset-bearing one.
+    """
+    value = sidecar.get("session_start")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    session_id = sidecar.get("session_id")
+    if isinstance(session_id, str) and session_id:
+        return _transcript_session_start(user_id, session_id)
+    return ""
+
+
+def _order_key(user_id: str, sidecar: dict) -> tuple[str, str]:
+    """Total order over a document's sessions: ``(session time, session id)``.
+
+    The session id is a tie-break, not a meaningful ordering — it exists so the
+    order is TOTAL. Without it, two sidecars sharing a session time (or both
+    missing one) are incomparable, and the snapshot and the delta then disagree
+    about whether such a pair counts as "before": a snapshot asking "at or
+    before" would include a tie while a delta asking "strictly before" excluded
+    it, so the two halves of the same screen would be computed against different
+    session sets. With a total order, ``at_session`` minus ``prior`` is exactly
+    this session's own contribution in every case.
+    """
+    sid = sidecar.get("session_id")
+    return (_session_time_of(user_id, sidecar), sid if isinstance(sid, str) else "")
+
+
+def _load_entries(user_id: str) -> list[tuple[Path, dict, tuple[str, str]]]:
+    """Every readable sidecar with its ordering key resolved, ONE scan.
+
+    Resolving here rather than inside the merge keeps :func:`_union_from` pure
+    (the transcript fallback is file I/O) and keeps the cost to one pass even
+    when a caller merges the same sidecars for many documents
+    (:func:`documents_view`).
+    """
+    return [
+        (path, sidecar, _order_key(user_id, sidecar))
+        for path, sidecar in _iter_sidecar_files(user_id)
+    ]
+
+
 def _map_identity_of(sidecar: dict) -> str:
     """The claim-map version a sidecar was judged against, as a grouping key.
 
@@ -226,13 +318,22 @@ def _map_identity_of(sidecar: dict) -> str:
     return ""
 
 
-def _newest_map_group(entries: list[tuple[Path, dict]]) -> tuple[list[tuple[Path, dict]], int]:
+def _newest_map_group(entries: list) -> tuple[list, int]:
     """Split sidecars by claim-map version, keeping the NEWEST group.
 
     Returns ``(kept, dropped_count)``. "Newest" is the group containing the most
     recent ``judged_at`` (ISO-8601 strings, so lexicographic order is
     chronological); ties break toward the larger group, then by key, so the
     result is deterministic. A sidecar with no ``judged_at`` sorts oldest.
+
+    ``judged_at`` — NOT the session time :func:`_order_key` uses — is the right
+    key for THIS question, and the difference is not an oversight. The question
+    here is "which claim map is the current one?", and the judge always runs
+    against the map that was current when it ran: ``backfill_coverage.py``
+    refuses a stale map outright, so a re-judged month-old session carries
+    TODAY's map. Ranking those groups by session time would let a group of
+    backfilled old sessions look older than the superseded map it replaced, and
+    pick the superseded one. Ranking by when the judging happened cannot.
 
     This is the ``source_hash=None`` path. Merging claim ids ACROSS map versions
     would be a false number (ids are per-document sequentials — a re-extracted
@@ -242,7 +343,7 @@ def _newest_map_group(entries: list[tuple[Path, dict]]) -> tuple[list[tuple[Path
     """
     if len(entries) <= 1:
         return entries, 0
-    groups: dict[str, list[tuple[Path, dict]]] = {}
+    groups: dict[str, list] = {}
     for entry in entries:
         groups.setdefault(_map_identity_of(entry[1]), []).append(entry)
     if len(groups) == 1:
@@ -252,7 +353,7 @@ def _newest_map_group(entries: list[tuple[Path, dict]]) -> tuple[list[tuple[Path
         key, members = item
         newest = max(
             (m.get("judged_at") if isinstance(m.get("judged_at"), str) else "")
-            for _p, m in members
+            for _p, m, *_ in members
         )
         return (newest, len(members), key)
 
@@ -260,43 +361,34 @@ def _newest_map_group(entries: list[tuple[Path, dict]]) -> tuple[list[tuple[Path
     return kept, sum(len(v) for k, v in groups.items() if k != winner_key)
 
 
-def _judged_at_of(sidecar: dict) -> str:
-    """A sidecar's ``judged_at`` as a sortable string; ``""`` when it has none.
-
-    Missing sorts OLDEST, which puts an unstamped sidecar inside every as-of
-    snapshot rather than outside all of them. That is the safe direction: the
-    session it records did happen before the one being viewed in every case we
-    can actually produce (stamping has been unconditional since the writer
-    shipped), and excluding it would understate a historical number.
-    """
-    value = sidecar.get("judged_at")
-    return value if isinstance(value, str) else ""
-
-
 def _union_from(
-    sidecars: list[tuple[Path, dict]],
+    sidecars: list,
     document_id: str,
     source_hash: str | None,
-    as_of: str | None = None,
+    as_of: tuple[str, str] | None = None,
 ) -> dict:
     """Pure merge half of :func:`union_for_document` — no file I/O of its own.
+
+    ``sidecars`` is a list of ``(path, sidecar, order_key)`` triples as produced
+    by :func:`_load_entries`; the key is resolved there because the transcript
+    fallback needs the filesystem and this half must stay pure.
 
     Split out so one directory scan can serve many documents
     (:func:`documents_view`) and so the degradation rules are testable without a
     filesystem.
 
-    ``as_of`` — when given, only sidecars judged AT OR BEFORE that timestamp
-    contribute, producing the union as it stood at that moment. This is what
-    makes a past session's screen show where the document stood when that
-    session ended, instead of a number that changed afterwards for reasons that
-    session had nothing to do with.
+    ``as_of`` — an ``(session time, session id)`` key from :func:`_order_key`.
+    Only sessions AT OR BEFORE it in that total order contribute, producing the
+    union as it stood when that session ran. This is what makes a past session's
+    screen show where the document stood then, instead of a number that changed
+    afterwards for reasons that session had nothing to do with.
     """
-    matching: list[tuple[Path, dict]] = []
+    matching: list = []
     stale = 0
-    for path, sidecar in sidecars:
+    for path, sidecar, order_key in sidecars:
         if sidecar.get("document_id") != document_id:
             continue
-        if as_of is not None and _judged_at_of(sidecar) > as_of:
+        if as_of is not None and order_key > as_of:
             continue
         if source_hash is not None:
             # Two independent layers, both non-fatal: the envelope's declared
@@ -309,7 +401,7 @@ def _union_from(
             if declared and declared != source_hash:
                 stale += 1
                 continue
-        matching.append((path, sidecar))
+        matching.append((path, sidecar, order_key))
 
     if source_hash is None:
         matching, dropped = _newest_map_group(matching)
@@ -321,7 +413,7 @@ def _union_from(
     claims_total = 0
     invalid = 0
     sessions = 0
-    for path, sidecar in matching:
+    for path, sidecar, _key in matching:
         try:
             # ONE SET AT A TIME, deliberately. Handing the whole list to
             # union_coverage makes a single malformed verdict raise for the whole
@@ -364,7 +456,7 @@ def union_for_document(
     user_id: str,
     document_id: str,
     source_hash: str | None = None,
-    as_of: str | None = None,
+    as_of: tuple[str, str] | None = None,
 ) -> dict:
     """Union coverage across every session ``user_id`` has run on ``document_id``.
 
@@ -412,13 +504,13 @@ def union_for_document(
     with its path). Keeping them apart matters: one is the system working, the
     other is the system losing data.
 
-    ``as_of`` — a ``judged_at`` cutoff; only sessions judged at or before it
-    contribute, giving the union AS IT STOOD then. Reads files but makes no
-    model call.
+    ``as_of`` — an ordering key from :func:`_order_key` (``(session time,
+    session id)``); only sessions at or before it contribute, giving the union
+    AS IT STOOD when that session ran. The cutoff is SESSION time, not
+    ``judged_at`` — see :func:`_session_time_of` for why that distinction is the
+    whole point. Reads files but makes no model call.
     """
-    return _union_from(
-        list(_iter_sidecar_files(user_id)), document_id, source_hash, as_of
-    )
+    return _union_from(_load_entries(user_id), document_id, source_hash, as_of)
 
 
 def documents_view(user_id: str, identity_for) -> dict[str, dict]:
@@ -441,11 +533,11 @@ def documents_view(user_id: str, identity_for) -> dict[str, dict]:
     Never raises: an ``identity_for`` that blows up on one document costs that
     document its entry, not the whole list.
     """
-    sidecars = list(_iter_sidecar_files(user_id))
+    sidecars = _load_entries(user_id)
     doc_ids = sorted(
         {
             s.get("document_id")
-            for _p, s in sidecars
+            for _p, s, _k in sidecars
             if isinstance(s.get("document_id"), str) and s.get("document_id")
         }
     )
@@ -500,7 +592,10 @@ def session_contribution(
     """What THIS session added to the document's accumulated coverage, or None.
 
     ``new_claims`` counts the claims this session's sidecar covered that no
-    EARLIER-judged session had already covered. Measuring against earlier
+    EARLIER session had already covered. "Earlier" is by SESSION time, not by
+    when the judge ran (see :func:`_session_time_of`) — ordering on ``judged_at``
+    made a backfilled session count every live-judged session as its
+    predecessor, zeroing a contribution that was real. Measuring against earlier
     sessions rather than "every other session" is what makes the number stable:
     re-opening a past session months later must not shrink its contribution
     because a later session happened to re-cover the same ground.
@@ -521,20 +616,17 @@ def session_contribution(
         _warn(f"structurally invalid coverage sidecar for session {session_id}: {e}")
         return None
 
-    own_judged_at = own.get("judged_at") if isinstance(own.get("judged_at"), str) else ""
-    own_session_id = own.get("session_id")
+    own_key = _order_key(user_id, own)
     prior: set[str] = set()
-    for path, sidecar in _iter_sidecar_files(user_id):
+    for path, sidecar, order_key in _load_entries(user_id):
         if sidecar.get("document_id") != document_id:
             continue
         if source_hash is not None and sidecar.get("source_hash") != source_hash:
             continue
-        if sidecar.get("session_id") == own_session_id:
-            continue
-        judged_at = (
-            sidecar.get("judged_at") if isinstance(sidecar.get("judged_at"), str) else ""
-        )
-        if judged_at >= own_judged_at:
+        # STRICTLY earlier in the same total order the snapshot uses, so
+        # at_session minus prior is exactly this session's own contribution.
+        # The session id inside the key makes this exclude the session itself.
+        if order_key >= own_key:
             continue
         try:
             prior.update(cj.union_coverage([sidecar])["covered_ids"])
@@ -544,6 +636,57 @@ def session_contribution(
 
     covered_ids = set(mine["covered_ids"])
     return {"covered": len(covered_ids), "new_claims": len(covered_ids - prior)}
+
+
+# The four states the ended view distinguishes. ``pending`` is the only one
+# that means "keep waiting"; everything else is settled.
+STATUS_READY = "ready"
+STATUS_PENDING = "pending"
+STATUS_FAILED = "failed"
+STATUS_NONE = "none"
+
+
+def resolve_status(*, has_sidecar: bool, expects: bool, judge_failed: bool) -> str:
+    """Which of the four coverage states this session is in, as a pure decision.
+
+    Lives HERE rather than inline in the ``/telemetry`` route because app.py is
+    deliberately untested at the transport layer (CLAUDE.md, "test via pure
+    helpers, not TestClient") — a decision left there is a decision no test can
+    fail on. The route stays glue over this plus two already-tested primitives.
+
+    Order matters. ``has_sidecar`` wins outright: the file is written AFTER the
+    ledger row, so its presence is the only proof the result actually landed,
+    and a stale "failed" row must never hide a sidecar that exists. ``expects``
+    is checked before ``judge_failed`` so a session that was never going to be
+    judged reads as ``none`` rather than borrowing a failure it never had.
+    """
+    if has_sidecar:
+        return STATUS_READY
+    if not expects:
+        return STATUS_NONE
+    return STATUS_FAILED if judge_failed else STATUS_PENDING
+
+
+def finalize_for_status(block: dict | None, status: str) -> dict | None:
+    """Apply the pending-window policy to a :func:`session_view` block.
+
+    While the judge is still running the accumulated ``total`` is WITHHELD. It
+    is a real number, but it does not include the session the user just
+    finished, and on the screen you land on when you hang up — under a bare
+    "Coverage" heading, with no delta beside it — it reads as a statement about
+    that session. For those 10-40s the honest answer is nothing at all.
+
+    Every other status passes through untouched, which is what releases the
+    total again on ``failed``: a broken judge then costs the delta rather than
+    the document's number. A block left with nothing in it collapses to None so
+    the caller emits a null field and the UI stays silent.
+    """
+    if status != STATUS_PENDING or block is None:
+        return block
+    held = {**block, "total": None}
+    if not any(held.get(k) for k in ("total", "at_session", "session")):
+        return None
+    return held
 
 
 def session_view(
@@ -565,12 +708,14 @@ def session_view(
 
       * ``total`` — where the document stands NOW. Correct on the screen you
         land on when you hang up: that is the live number at that moment.
-      * ``at_session`` — where it stood when THIS session ended (the union of
-        every session judged at or before it). This is what a past session's
-        screen needs: the current total is identical on every past session, so
-        it says nothing about the one being viewed and reads as a claim about
-        it that isn't true. Scrolling back through history should show an
-        ascending record, not the same number N times.
+      * ``at_session`` — where it stood when THIS session RAN (the union of
+        every session at or before it in session-start order). This is what a
+        past session's screen needs: the current total is identical on every
+        past session, so it says nothing about the one being viewed and reads as
+        a claim about it that isn't true. Scrolling back through history should
+        show an ascending record, not the same number N times — and because the
+        cutoff is session time, that record ascends in the SAME order the
+        history list is sorted in.
       * ``session`` — what this session added.
 
     A session whose judge produced nothing has ``at_session`` and ``session``
@@ -585,13 +730,16 @@ def session_view(
         user_id, session_id, document_id, source_hash=source_hash
     )
 
-    # The snapshot is keyed on this session's OWN judged_at, so it needs the
-    # sidecar; without one there is no moment to take a snapshot at.
+    # The snapshot is keyed on WHEN THIS SESSION RAN, so it needs the sidecar;
+    # without one there is no moment to take a snapshot at. An unresolvable
+    # session time is the same case: a cutoff of "" would place this session
+    # before everything and render a near-empty snapshot as if it were history,
+    # which is the wrong-number failure this whole ordering fix exists to stop.
     at_session = None
     own = load_sidecar(user_id, session_id)
     if own and own.get("document_id") == document_id:
-        as_of = _judged_at_of(own)
-        if as_of:
+        as_of = _order_key(user_id, own)
+        if as_of[0]:
             at_session = as_display(
                 union_for_document(user_id, document_id, source_hash, as_of),
                 claims_total,
@@ -704,6 +852,11 @@ def judge_session(
         cost_row["error"] = error
         return None, cost_row
 
+    # Taken from the transcript both callers already hand over, so neither
+    # bot.py's teardown nor backfill_coverage.py has to learn a new argument —
+    # and backfill therefore stamps the session's REAL start time rather than
+    # the time of the backfill, which is the whole ordering fix.
+    session_start = transcript.get("session_start") if isinstance(transcript, dict) else None
     sidecar = build_sidecar(
         session_id=session_id,
         user_id=user_id,
@@ -712,6 +865,7 @@ def judge_session(
         verdict_obj=verdict_obj,
         claims_total=claims_total,
         transcript_turns=len(turns),
+        session_start=session_start if isinstance(session_start, str) else None,
     )
     cost_row["covered_count"] = sidecar["covered_count"]
     cost_row["claims_total"] = claims_total

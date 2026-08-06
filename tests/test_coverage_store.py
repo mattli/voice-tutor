@@ -594,19 +594,33 @@ def test_session_view_carries_both_halves_for_a_judged_session(store_dir):
 # The historical snapshot: where the document stood when a session ended.
 # --------------------------------------------------------------------------- #
 
+def _snap(store_dir, session):
+    """The as-of snapshot for one session, addressed the way session_view does."""
+    own = cs.load_sidecar("matt", session)
+    return cs.union_for_document(
+        "matt", "doc-A", "hash-A", as_of=cs._order_key("matt", own)
+    )
+
+
 def _three_sessions(store_dir):
+    # session_start is the ordering key; judged_at is deliberately set to a
+    # DIFFERENT day here so any code that reverts to ordering on it fails these
+    # tests rather than passing them by coincidence.
     _write_raw(store_dir, "matt", "first", claims_total=10,
-               judged_at="2026-08-01T00:00:00", verdicts=[
+               session_start="2026-08-01T09:00:00", judged_at="2026-08-09T00:00:00",
+               verdicts=[
                    {"claim_id": "c1", "covered": True, "turns": [1]},
                    {"claim_id": "c2", "covered": False, "turns": []},
                ])
     _write_raw(store_dir, "matt", "second", claims_total=10,
-               judged_at="2026-08-02T00:00:00", verdicts=[
+               session_start="2026-08-02T09:00:00", judged_at="2026-08-08T00:00:00",
+               verdicts=[
                    {"claim_id": "c2", "covered": True, "turns": [1]},
                    {"claim_id": "c3", "covered": True, "turns": [2]},
                ])
     _write_raw(store_dir, "matt", "third", claims_total=10,
-               judged_at="2026-08-03T00:00:00", verdicts=[
+               session_start="2026-08-03T09:00:00", judged_at="2026-08-07T00:00:00",
+               verdicts=[
                    {"claim_id": "c4", "covered": True, "turns": [1]},
                ])
 
@@ -618,7 +632,7 @@ def test_the_snapshot_is_the_union_AS_OF_that_session_not_today(store_dir):
     _three_sessions(store_dir)
     now = cs.union_for_document("matt", "doc-A", "hash-A")
     assert len(now["covered_ids"]) == 4
-    at_first = cs.union_for_document("matt", "doc-A", "hash-A", as_of="2026-08-01T00:00:00")
+    at_first = _snap(store_dir, "first")
     assert at_first["covered_ids"] == ["c1"]
     assert at_first["sessions"] == 1
 
@@ -627,7 +641,7 @@ def test_the_snapshot_INCLUDES_the_session_being_viewed(store_dir):
     # "At or before", not "before": the number is where you stood when the
     # session ENDED, which includes what it just contributed.
     _three_sessions(store_dir)
-    at_second = cs.union_for_document("matt", "doc-A", "hash-A", as_of="2026-08-02T00:00:00")
+    at_second = _snap(store_dir, "second")
     assert at_second["covered_ids"] == ["c1", "c2", "c3"]
     assert at_second["sessions"] == 2
 
@@ -635,10 +649,7 @@ def test_the_snapshot_INCLUDES_the_session_being_viewed(store_dir):
 def test_snapshots_ascend_through_history(store_dir):
     # Scrolling back through past sessions should read as a record of progress.
     _three_sessions(store_dir)
-    counts = [
-        len(cs.union_for_document("matt", "doc-A", "hash-A", as_of=stamp)["covered_ids"])
-        for stamp in ("2026-08-01T00:00:00", "2026-08-02T00:00:00", "2026-08-03T00:00:00")
-    ]
+    counts = [len(_snap(store_dir, s)["covered_ids"]) for s in ("first", "second", "third")]
     assert counts == [1, 3, 4]
     assert counts == sorted(counts), "coverage is append-only; a snapshot can never retreat"
 
@@ -654,6 +665,108 @@ def test_session_view_carries_the_snapshot_and_the_current_total_separately(stor
     assert view["session"] == {"covered": 1, "new_claims": 1}
 
 
+# --------------------------------------------------------------------------- #
+# Backfill-shaped data: judged_at deliberately OUT of session order.
+#
+# This is the case the original as-of tests all missed — every one of them used
+# judged_at values that happened to ascend with session order, so ordering on
+# the wrong field passed them. backfill_coverage.py re-judges old transcripts
+# TODAY, stamping judged_at with the time of the backfill, so on real data the
+# two orders diverge (confirmed on the live ledger 2026-08-06).
+# --------------------------------------------------------------------------- #
+
+def _backfill_shaped(store_dir):
+    """Three sessions where judged_at order is the REVERSE of session order.
+
+    Session `early` ran first but was judged last, exactly as a backfill leaves
+    it. Ordering on judged_at puts `early` after everything.
+    """
+    # `early` also covers c2, which `middle` re-covers later. The overlap is
+    # what makes new_claims discriminating: with judged_at ordering `early` is
+    # last, so it counts c2 as already covered and under-reports its own work.
+    _write_raw(store_dir, "matt", "early", claims_total=10,
+               session_start="2026-07-01T09:00:00", judged_at="2026-08-05T03:00:00",
+               verdicts=[{"claim_id": "c1", "covered": True, "turns": [1]},
+                         {"claim_id": "c2", "covered": True, "turns": [2]}])
+    _write_raw(store_dir, "matt", "middle", claims_total=10,
+               session_start="2026-07-15T09:00:00", judged_at="2026-08-05T02:00:00",
+               verdicts=[{"claim_id": "c2", "covered": True, "turns": [1]}])
+    _write_raw(store_dir, "matt", "late", claims_total=10,
+               session_start="2026-08-01T09:00:00", judged_at="2026-08-05T01:00:00",
+               verdicts=[{"claim_id": "c3", "covered": True, "turns": [1]}])
+
+
+def test_the_snapshot_orders_by_session_time_not_by_when_the_judge_ran(store_dir):
+    # The earliest session must see only itself, however late it was judged.
+    # Ordering on judged_at gave this session the union of all three.
+    _backfill_shaped(store_dir)
+    assert _snap(store_dir, "early")["covered_ids"] == ["c1", "c2"]
+    assert _snap(store_dir, "middle")["covered_ids"] == ["c1", "c2"]
+    assert _snap(store_dir, "late")["covered_ids"] == ["c1", "c2", "c3"]
+
+
+def test_snapshots_still_ascend_when_the_judge_ran_out_of_order(store_dir):
+    # The live symptom this fixes: on real data one session rendered 1/63 where
+    # the true standing was 16/63, because five earlier sessions were backfilled
+    # the day AFTER it was judged. The sequence must never retreat.
+    _backfill_shaped(store_dir)
+    counts = [len(_snap(store_dir, s)["covered_ids"]) for s in ("early", "middle", "late")]
+    assert counts == [2, 2, 3]
+    assert counts == sorted(counts), "history must ascend in the order the list is sorted in"
+
+
+def test_a_backfilled_session_keeps_the_contribution_it_actually_made(store_dir):
+    # new_claims counts what no EARLIER session had covered. Ordering on
+    # judged_at made the first-ever session count every live-judged session as
+    # its predecessor, so the c2 it covered FIRST read as already-covered and
+    # its contribution came back 1 instead of 2.
+    _backfill_shaped(store_dir)
+    assert cs.session_contribution(
+        "matt", "early", "doc-A", source_hash="hash-A"
+    ) == {"covered": 2, "new_claims": 2}
+
+
+def test_the_ordering_key_falls_back_to_the_transcript_for_old_sidecars(store_dir):
+    # Sidecars written before the envelope carried session_start must still
+    # order correctly — there are 11 of them in production and no migration.
+    # The transcript sits beside the sidecar and has always recorded the start.
+    (store_dir / "matt").mkdir(parents=True, exist_ok=True)
+    (store_dir / "matt" / "old.json").write_text(
+        json.dumps({"session_start": "2026-07-01T09:00:00", "turns": []})
+    )
+    _write_raw(store_dir, "matt", "old", claims_total=10,
+               judged_at="2026-08-05T03:00:00",   # no session_start in the envelope
+               verdicts=[{"claim_id": "c1", "covered": True, "turns": [1]}])
+    _write_raw(store_dir, "matt", "newer", claims_total=10,
+               session_start="2026-08-01T09:00:00", judged_at="2026-08-05T01:00:00",
+               verdicts=[{"claim_id": "c2", "covered": True, "turns": [1]}])
+    assert cs._session_time_of("matt", cs.load_sidecar("matt", "old")) == "2026-07-01T09:00:00"
+    assert _snap(store_dir, "old")["covered_ids"] == ["c1"]
+
+
+def test_the_ordering_key_never_mixes_naive_session_time_with_utc_judged_at(store_dir):
+    # session_start is naive local; judged_at carries a UTC offset. Falling back
+    # from one to the other would compare "2026-08-01T09:00:00" against
+    # "2026-08-05T01:00:00+00:00" — a silent, format-driven mis-ordering. A
+    # sidecar with no resolvable session time sorts oldest instead.
+    _write_raw(store_dir, "matt", "no-time", claims_total=10,
+               judged_at="2026-08-05T01:00:00+00:00",
+               verdicts=[{"claim_id": "c1", "covered": True, "turns": [1]}])
+    assert cs._session_time_of("matt", cs.load_sidecar("matt", "no-time")) == ""
+
+
+def test_a_session_with_no_resolvable_time_renders_no_snapshot(store_dir):
+    # A cutoff of "" would place the session before everything and render a
+    # near-empty snapshot as if it were history — the wrong-number failure this
+    # ordering fix exists to stop. Absent is the honest answer.
+    _three_sessions(store_dir)
+    _write_raw(store_dir, "matt", "no-time", claims_total=10,
+               verdicts=[{"claim_id": "c5", "covered": True, "turns": [1]}])
+    view = cs.session_view("matt", "no-time", "doc-A", source_hash="hash-A", claims_total=10)
+    assert view["at_session"] is None
+    assert view["total"] is not None, "the document's own number still renders"
+
+
 def test_the_snapshot_is_absent_when_the_session_has_no_coverage_of_its_own(store_dir):
     # No sidecar means no moment to take a snapshot at. The document's current
     # total still renders for the fresh view; the past view shows nothing rather
@@ -666,26 +779,26 @@ def test_the_snapshot_is_absent_when_the_session_has_no_coverage_of_its_own(stor
 
 
 def test_a_snapshot_never_reaches_into_another_users_history(store_dir):
-    _write_raw(store_dir, "matt", "mine", judged_at="2026-08-02T00:00:00", verdicts=[
+    _write_raw(store_dir, "matt", "mine", session_start="2026-08-02T09:00:00", verdicts=[
         {"claim_id": "c1", "covered": True, "turns": [1]},
     ])
     _write_raw(store_dir, "someone-else", "theirs", user_id="someone-else",
-               judged_at="2026-08-01T00:00:00", verdicts=[
+               session_start="2026-08-01T09:00:00", verdicts=[
                    {"claim_id": "c2", "covered": True, "turns": [1]},
                ])
-    snap = cs.union_for_document("matt", "doc-A", "hash-A", as_of="2026-08-02T00:00:00")
+    snap = _snap(store_dir, "mine")
     assert snap["covered_ids"] == ["c1"]
 
 
 def test_an_unstamped_sidecar_lands_INSIDE_every_snapshot(store_dir):
-    # Missing judged_at sorts oldest. Under-counting a historical number would be
-    # the worse failure, and every sidecar the writer produces is stamped.
+    # No resolvable session time sorts oldest. Under-counting a historical
+    # number would be the worse failure, and every sidecar the writer produces
+    # now carries session_start.
     _write_raw(store_dir, "matt", "unstamped", verdicts=[
         {"claim_id": "c9", "covered": True, "turns": [1]},
     ])
     _three_sessions(store_dir)
-    snap = cs.union_for_document("matt", "doc-A", "hash-A", as_of="2026-08-01T00:00:00")
-    assert "c9" in snap["covered_ids"]
+    assert "c9" in _snap(store_dir, "first")["covered_ids"]
 
 
 def test_a_crafted_session_id_cannot_read_another_users_contribution(store_dir):
@@ -824,3 +937,81 @@ def test_the_judge_sees_only_this_sessions_transcript():
     sent = client.calls[0]["messages"][0]["content"]
     assert "first claim explained" in sent
     assert "covered_ids" not in sent and "prior session" not in sent.lower()
+
+
+# --------------------------------------------------------------------------- #
+# The four coverage states, and the pending-window policy.
+#
+# Pure so the suite can fail on them: the /telemetry route that uses these is
+# untested at the transport layer by CLAUDE.md's rule, so a decision left inline
+# there is a decision no test can catch.
+# --------------------------------------------------------------------------- #
+
+def test_a_sidecar_on_disk_always_wins():
+    # The sidecar is written AFTER the ledger row, so its presence is the only
+    # proof the result landed. A stale "failed" row must never hide it.
+    assert cs.resolve_status(has_sidecar=True, expects=True, judge_failed=True) == "ready"
+    assert cs.resolve_status(has_sidecar=True, expects=False, judge_failed=False) == "ready"
+
+
+def test_a_session_that_was_never_going_to_be_judged_is_none_not_failed():
+    assert cs.resolve_status(has_sidecar=False, expects=False, judge_failed=True) == "none"
+
+
+def test_a_recorded_failure_is_settled_not_pending():
+    # This is what stops the poll. Waiting on the artifact instead meant every
+    # judge failure burned all 30 attempts.
+    assert cs.resolve_status(has_sidecar=False, expects=True, judge_failed=True) == "failed"
+
+
+def test_expected_with_no_verdict_yet_is_pending():
+    assert cs.resolve_status(has_sidecar=False, expects=True, judge_failed=False) == "pending"
+
+
+def test_the_accumulated_total_is_withheld_while_the_judge_runs():
+    # The number is real but excludes the session just finished, and on the
+    # fresh ended view that reads as a claim about it.
+    block = {"total": {"covered": 16, "total": 63, "percentage": 25.4, "sessions": 3},
+             "at_session": None, "session": None}
+    assert cs.finalize_for_status(block, "pending") is None
+
+
+def test_a_failed_judge_releases_the_document_total():
+    # Degradation is losing the DELTA, not the document's number.
+    block = {"total": {"covered": 16, "total": 63, "percentage": 25.4, "sessions": 3},
+             "at_session": None, "session": None}
+    assert cs.finalize_for_status(block, "failed") == block
+
+
+def test_a_settled_block_passes_through_untouched():
+    block = {"total": {"covered": 18, "total": 63, "percentage": 28.6, "sessions": 4},
+             "at_session": {"covered": 18, "total": 63, "percentage": 28.6, "sessions": 4},
+             "session": {"covered": 7, "new_claims": 2}}
+    assert cs.finalize_for_status(block, "ready") == block
+    assert cs.finalize_for_status(None, "pending") is None
+
+
+def test_pending_keeps_a_past_sessions_own_snapshot():
+    # A past session viewed while an UNRELATED judge is pending still has its
+    # own history to show; only the live total is held back.
+    block = {"total": {"covered": 18, "total": 63, "percentage": 28.6, "sessions": 4},
+             "at_session": {"covered": 10, "total": 63, "percentage": 15.9, "sessions": 2},
+             "session": {"covered": 4, "new_claims": 3}}
+    held = cs.finalize_for_status(block, "pending")
+    assert held["total"] is None
+    assert held["at_session"] == block["at_session"] and held["session"] == block["session"]
+
+
+def test_judge_session_stamps_the_sessions_real_start_time(store_dir):
+    # Sourced from the transcript both callers already pass, so backfill stamps
+    # the session's REAL start rather than the time of the backfill.
+    sidecar, _cost = _judge(transcript={**_TRANSCRIPT, "session_start": "2026-07-01T09:00:00"})
+    assert sidecar["session_start"] == "2026-07-01T09:00:00"
+    assert sidecar["judged_at"] != sidecar["session_start"], "two distinct facts"
+
+
+def test_a_transcript_with_no_start_time_stamps_none_rather_than_guessing(store_dir):
+    # Better an absent field the reader can fall back on than judged_at
+    # masquerading as a session time — the two are different clocks.
+    sidecar, _cost = _judge(transcript=_TRANSCRIPT)
+    assert sidecar["session_start"] is None

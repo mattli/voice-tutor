@@ -574,8 +574,10 @@ def _lookup_session_doc(user_id: str, session_id: str) -> dict | None:
     return None
 
 
-def _session_coverage(user_id: str, session_id: str, doc_id: str | None) -> tuple[dict | None, bool]:
-    """Return ``(coverage_block, expects_coverage)`` for the ended view.
+def _session_coverage(
+    user_id: str, session_id: str, doc_id: str | None
+) -> tuple[dict | None, bool, str]:
+    """Return ``(coverage_block, expects_coverage, status)`` for the ended view.
 
     ``expects_coverage`` mirrors ``expects_summary``: the SERVER saying whether a
     coverage sidecar is actually coming, so the client waits only for something
@@ -585,11 +587,27 @@ def _session_coverage(user_id: str, session_id: str, doc_id: str | None) -> tupl
     cleared the same user-turn floor. False means the ended view has nothing to
     wait for: no held poll, no spinner, nothing rendered.
 
+    ``status`` refines that into what is true RIGHT NOW, which
+    ``expects_coverage`` cannot express because it is computed from
+    preconditions and a precondition cannot know the judge later failed:
+
+      * ``"ready"``    — this session's sidecar is on disk.
+      * ``"pending"``  — expected, not yet written, no failure on record.
+      * ``"failed"``   — the ledger records a failed judge run; none is coming.
+      * ``"none"``     — no judge was ever expected for this session.
+
+    While ``pending``, the block's ``total`` is WITHHELD. The accumulated total
+    is a real number but it does not yet include the session the user just
+    finished, and rendering it under a bare "Coverage" heading on the screen you
+    land on when you hang up reads as a statement about that session. Absent is
+    the honest answer for those 10-40s; ``failed`` then releases it, so a broken
+    judge costs the delta rather than the document's number.
+
     Never raises. Coverage is an addition to this composite, and it must not be
     able to take down the endpoint the whole ended view polls.
     """
     if not doc_id:
-        return None, False
+        return None, False, "none"
     try:
         identity_ = _fresh_map_identity(user_id, doc_id)
         block = coverage_store.session_view(
@@ -599,10 +617,16 @@ def _session_coverage(user_id: str, session_id: str, doc_id: str | None) -> tupl
             source_hash=(identity_ or {}).get("source_hash"),
             claims_total=(identity_ or {}).get("claims_total"),
         )
-        return block, identity_ is not None
+        expects = identity_ is not None
+        status = coverage_store.resolve_status(
+            has_sidecar=coverage_store.load_sidecar(user_id, session_id) is not None,
+            expects=expects,
+            judge_failed=sessions.coverage_judge_failed(user_id, session_id),
+        )
+        return coverage_store.finalize_for_status(block, status), expects, status
     except Exception as e:  # noqa: BLE001 - never break the ended view's poll
         print(f"[coverage] telemetry block failed for {session_id}: {e!r}", flush=True)
-        return None, False
+        return None, False, "none"
 
 
 @app.get("/api/sessions/{session_id}/telemetry")
@@ -653,10 +677,20 @@ async def get_telemetry(
     # page load that doesn't. A crafted value is harmless: it only ever selects
     # among the authenticated user's OWN sidecars and their own claim map.
     coverage_doc_id = Path(doc).name if doc else doc_info["document_id"]
-    coverage_block, expects_coverage = _session_coverage(user_id, safe_id, coverage_doc_id)
+    coverage_block, expects_coverage, coverage_status = _session_coverage(
+        user_id, safe_id, coverage_doc_id
+    )
     result["coverage"] = coverage_block
     result["expects_coverage"] = bool(
         expects_coverage and bot.COVERAGE_JUDGE and result["expects_summary"]
+    )
+    # What the client waits on. "pending" is the ONLY value that holds the poll
+    # open: a judge that failed is a settled outcome, not a slow one, and the
+    # old done-condition (wait for coverage.session to appear) could never be
+    # satisfied by it — so every judge failure burned all 30 polls before the
+    # view gave up on a recap that had landed at 5s.
+    result["coverage_status"] = (
+        coverage_status if result["expects_coverage"] or coverage_status == "ready" else "none"
     )
     return sessions.redact_telemetry_for_user(result, user_id)
 
