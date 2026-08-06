@@ -1176,6 +1176,9 @@
   let pollAttempts = 0;
   // Which coverage treatment the ended view renders. See startPolling().
   let viewingPastSession = false;
+  // Where the ended view was opened FROM, so Back returns there instead of
+  // always dumping to the picker. Only the history list sets 'history'.
+  let endedViewFrom = 'picker';
 
   function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function fmtTime(s) {
@@ -1196,6 +1199,13 @@
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('is-active'));
     $(screenFor[name]).classList.add('is-active');
     wordmark.setAttribute('data-context', name);
+
+    // The back label names its actual destination, so it never promises the
+    // picker and deliver the history list (or the reverse).
+    const backToHistory = (name === 'recap-ready' && endedViewFrom === 'history');
+    const back = $('header-back');
+    back.textContent = backToHistory ? '← Past sessions' : '← Documents';
+    back.setAttribute('aria-label', backToHistory ? 'Back to past sessions' : 'Back to documents');
 
     $('session-idle').style.display       = (name === 'session-idle')     ? '' : 'none';
     $('session-active').style.display     = (name === 'session-active')   ? '' : 'none';
@@ -1678,6 +1688,7 @@
   // and always means "looking back".
   function startPolling() {
     viewingPastSession = false;
+    endedViewFrom = 'picker';   // a session you just finished has no list behind it
     if (pollTimer) clearInterval(pollTimer);
     pollAttempts = 0;
     const target = sessionId;
@@ -1811,10 +1822,19 @@
   $('header-back').addEventListener('click', () => {
     teardownConnection();
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    const context = wordmark.getAttribute('data-context');
     sessionId = null;
     connectedAt = null;
     sessionStartMs = null;
     resetDiagnostics();
+    // Back returns where you came FROM. Opening a past session out of the
+    // history list and landing on the picker loses your place in that list,
+    // which is the one thing you were using it for.
+    if (context === 'recap-ready' && endedViewFrom === 'history') {
+      openHistory();
+      return;
+    }
+    endedViewFrom = 'picker';
     showState('picker');
     loadDocs();
   });
@@ -1839,11 +1859,17 @@
   // ?session=<id>), restore it so the user lands where they were instead of
   // at the top of the page.
   function scrollKey(sid) { return `vt:scroll:${sid}`; }
+  // Where this session was opened from, kept across a viewer round-trip. The
+  // browser-back lands on /study/?session=<id>, a fresh page load that knows
+  // nothing about the history list you were in — same problem the scroll
+  // position already solves this way, so it uses the same mechanism.
+  function originKey(sid) { return `vt:from:${sid}`; }
 
   document.addEventListener('click', e => {
     const a = e.target.closest('a[href^="/view/"]');
     if (a && sessionId) {
       sessionStorage.setItem(scrollKey(sessionId), String(window.scrollY));
+      sessionStorage.setItem(originKey(sessionId), endedViewFrom);
     }
   }, true);
 
@@ -1858,8 +1884,9 @@
   }
 
   // ─── load a past session into recap-ready (no polling) ─
-  async function loadSessionView(sid) {
+  async function loadSessionView(sid, from = 'picker') {
     viewingPastSession = true;
+    endedViewFrom = from;
     let data;
     try {
       const r = await fetch(`/api/sessions/${sid}/telemetry`);
@@ -1952,7 +1979,7 @@
           <path d="M5 3l4 4-4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"></path>
         </svg>`;
       const sid = s.session_id;
-      btn.addEventListener('click', () => loadSessionView(sid));
+      btn.addEventListener('click', () => loadSessionView(sid, 'history'));
       list.appendChild(btn);
     });
     historyMount.innerHTML = '';
@@ -2001,7 +2028,8 @@
     const params = new URLSearchParams(location.search);
     const urlSession = params.get('session');
     if (urlSession) {
-      const ok = await loadSessionView(urlSession);
+      const ok = await loadSessionView(
+        urlSession, sessionStorage.getItem(originKey(urlSession)) || 'picker');
       if (ok) { restoreScroll(urlSession); return; }
       // Session in URL didn't resolve — clean up and fall through to picker.
       history.replaceState(null, '', '/study/');
