@@ -791,9 +791,14 @@
   .precov {
     display: flex;
     align-items: center;
-    gap: 10px;
+    flex-wrap: wrap;
+    gap: 6px 10px;
     margin-top: 14px;
   }
+  /* Same meter, sitting under the recap's own title/duration header on a past
+     session — the session's own facts, in the same register as the pre-connect
+     screen, rather than a card competing with the recap above it. */
+  .precov--recap { margin: -4px 0 22px; }
   .precov__bar {
     flex: 1;
     max-width: 180px;
@@ -1072,6 +1077,14 @@
         </div>
         <div class="coverage__bar"><div class="coverage__fill" id="coverage-fill"></div></div>
         <p class="coverage__meta" id="coverage-meta"></p>
+      </div>
+
+      <!-- Past-session treatment: the same inline meter as the pre-connect
+           screen, moved under the recap's title/duration header once that has
+           rendered. The card above is the FRESH treatment only. -->
+      <div class="precov precov--recap" id="past-coverage" style="display:none;">
+        <span class="precov__bar"><span class="precov__fill" id="past-coverage-fill"></span></span>
+        <span class="precov__text" id="past-coverage-text"></span>
       </div>
 
       <div class="recap-inline-loading" id="recap-inline-loading" role="status" aria-live="polite">
@@ -1640,6 +1653,15 @@
     $('coverage-fill').style.width = '0';
     $('coverage-delta').textContent = '';
     $('coverage-label').textContent = 'Coverage';
+    // The past-session meter gets MOVED into the rendered recap, so returning it
+    // to its home in the markup is part of the reset — otherwise it would be
+    // orphaned inside the previous session's recap when that gets replaced.
+    const pastMeter = $('past-coverage');
+    pastMeter.style.display = 'none';
+    $('past-coverage-fill').style.width = '0';
+    if (pastMeter.parentElement !== $('recap-ready')) {
+      $('recap-ready').insertBefore(pastMeter, recapInlineLoading);
+    }
     recapInlineLoading.style.display = 'none';
     updateContextLinks();
   }
@@ -1759,6 +1781,24 @@
   // or was skipped still shows the accumulated number, and the delta is simply
   // absent. No coverage at all means the card never appears; there is no error
   // state and no spinner, because nothing here is worth telling the user about.
+  // Slot the past-session meter under the recap's own header (the "# Study
+  // session — <doc>" heading and its Duration line), so it reads as one of that
+  // session's facts. Falls back to leaving it where it sits in the markup when
+  // there is no recap to sit under — a session too short for one, or one whose
+  // recap never generated.
+  function placePastMeter() {
+    const meter = $('past-coverage');
+    if (recapBody.style.display === 'none') return;
+    const heading = recapBody.querySelector('h1');
+    if (!heading) return;
+    let anchor = heading;
+    // The duration line immediately follows the title; keep them together.
+    if (anchor.nextElementSibling && anchor.nextElementSibling.tagName === 'P') {
+      anchor = anchor.nextElementSibling;
+    }
+    if (meter.previousElementSibling !== anchor) anchor.after(meter);
+  }
+
   function renderCoverage(cov) {
     if (!cov) return;
     // A PAST session shows where the document stood when that session ended,
@@ -1771,18 +1811,26 @@
     if (!figure || !figure.total || typeof figure.percentage !== 'number') return;
 
     const pct = Math.max(0, Math.min(100, figure.percentage));
-    $('coverage-pct').textContent = `${pct}%`;
-    $('coverage-fill').style.width = `${pct}%`;
-
     const session = cov.session;
     if (viewingPastSession) {
-      $('coverage-label').textContent = 'Coverage after this session';
-      $('coverage-meta').textContent = `${figure.covered} of ${figure.total} claims`;
-      $('coverage-delta').textContent = !session
+      // Inline under the header, not a card: this screen is about one session,
+      // and the recap is the thing worth reading on it.
+      const delta = !session
         ? ''
-        : session.new_claims > 0 ? `+${session.new_claims} new` : 'nothing new';
-    } else {
+        : session.new_claims > 0 ? ` · +${session.new_claims} new` : ' · nothing new';
+      $('past-coverage-fill').style.width = `${pct}%`;
+      $('past-coverage-text').textContent =
+        `${pct}% after this session · ${figure.covered} of ${figure.total} claims${delta}`;
+      $('past-coverage').style.display = '';
+      placePastMeter();
+      return;
+    }
+    {
+      // Fresh treatment: the card, leading with the document's current total —
+      // that IS the live number at the moment you hang up.
       const sessions = figure.sessions === 1 ? '1 session' : `${figure.sessions} sessions`;
+      $('coverage-pct').textContent = `${pct}%`;
+      $('coverage-fill').style.width = `${pct}%`;
       $('coverage-label').textContent = 'Coverage';
       $('coverage-meta').textContent = `${figure.covered} of ${figure.total} claims · ${sessions}`;
       $('coverage-delta').textContent = !session
