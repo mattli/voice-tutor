@@ -797,8 +797,13 @@
   }
   /* Same meter, sitting under the recap's own title/duration header on a past
      session — the session's own facts, in the same register as the pre-connect
-     screen, rather than a card competing with the recap above it. */
-  .precov--recap { margin: -4px 0 22px; }
+     screen, rather than a card competing with the recap above it.
+     Splitting the recap into two containers costs the body's first heading its
+     top margin (it becomes a first-child), so the gap is restored on the body
+     itself: 16px from the duration line + 20px here = the 36px an h2 had when
+     the recap was one block. */
+  .precov--recap { margin: -6px 0 0; }
+  #recap-body { margin-top: 20px; }
   .precov__bar {
     flex: 1;
     max-width: 180px;
@@ -1079,17 +1084,20 @@
         <p class="coverage__meta" id="coverage-meta"></p>
       </div>
 
-      <!-- Past-session treatment: the same inline meter as the pre-connect
-           screen, moved under the recap's title/duration header once that has
-           rendered. The card above is the FRESH treatment only. -->
-      <div class="precov precov--recap" id="past-coverage" style="display:none;">
-        <span class="precov__bar"><span class="precov__fill" id="past-coverage-fill"></span></span>
-        <span class="precov__text" id="past-coverage-text"></span>
-      </div>
 
       <div class="recap-inline-loading" id="recap-inline-loading" role="status" aria-live="polite">
         <div class="recap-inline-loading__dots" aria-hidden="true"><span></span><span></span><span></span></div>
         <div class="recap-inline-loading__label" id="recap-inline-loading-label">Generating recap…</div>
+      </div>
+      <!-- The recap is rendered in TWO pieces — its own title/duration header,
+           then everything else — so the past-session meter can sit between them
+           as ordinary markup. Nothing is moved at runtime, and the header shown
+           is the recap's own text, so it cannot disagree with the recap about
+           which document or how long the session was. -->
+      <div class="md" id="recap-header" style="display:none;"></div>
+      <div class="precov precov--recap" id="past-coverage" style="display:none;">
+        <span class="precov__bar"><span class="precov__fill" id="past-coverage-fill"></span></span>
+        <span class="precov__text" id="past-coverage-text"></span>
       </div>
       <article class="md" id="recap-body" style="display:none;"></article>
       <div class="recap__short" id="recap-short" style="display:none;"></div>
@@ -1636,6 +1644,7 @@
   function renderRecapShort(message, elapsedSec) {
     recapInlineLoading.style.display = 'none';
     recapBody.style.display = 'none';
+    $('recap-header').style.display = 'none';
     recapShort.style.display = '';
     recapShort.textContent = `${message} (${fmtTime(elapsedSec)})`;
     $('diagnostics').style.display = 'none';
@@ -1653,15 +1662,10 @@
     $('coverage-fill').style.width = '0';
     $('coverage-delta').textContent = '';
     $('coverage-label').textContent = 'Coverage';
-    // The past-session meter gets MOVED into the rendered recap, so returning it
-    // to its home in the markup is part of the reset — otherwise it would be
-    // orphaned inside the previous session's recap when that gets replaced.
-    const pastMeter = $('past-coverage');
-    pastMeter.style.display = 'none';
+    $('past-coverage').style.display = 'none';
     $('past-coverage-fill').style.width = '0';
-    if (pastMeter.parentElement !== $('recap-ready')) {
-      $('recap-ready').insertBefore(pastMeter, recapInlineLoading);
-    }
+    $('recap-header').style.display = 'none';
+    $('recap-header').innerHTML = '';
     recapInlineLoading.style.display = 'none';
     updateContextLinks();
   }
@@ -1751,7 +1755,13 @@
 
   function renderTelemetry(data, sid) {
     if (data.recap && recapBody.style.display === 'none') {
-      recapBody.innerHTML = window.marked ? marked.parse(data.recap) : escapeHtml(data.recap);
+      const parts = splitRecap(data.recap);
+      const render = md => window.marked ? marked.parse(md) : escapeHtml(md);
+      if (parts.header) {
+        $('recap-header').innerHTML = render(parts.header);
+        $('recap-header').style.display = '';
+      }
+      recapBody.innerHTML = render(parts.body);
       recapBody.style.display = '';
       recapInlineLoading.style.display = 'none';
       recapShort.style.display = 'none';
@@ -1781,22 +1791,25 @@
   // or was skipped still shows the accumulated number, and the delta is simply
   // absent. No coverage at all means the card never appears; there is no error
   // state and no spinner, because nothing here is worth telling the user about.
-  // Slot the past-session meter under the recap's own header (the "# Study
-  // session — <doc>" heading and its Duration line), so it reads as one of that
-  // session's facts. Falls back to leaving it where it sits in the markup when
-  // there is no recap to sit under — a session too short for one, or one whose
-  // recap never generated.
-  function placePastMeter() {
-    const meter = $('past-coverage');
-    if (recapBody.style.display === 'none') return;
-    const heading = recapBody.querySelector('h1');
-    if (!heading) return;
-    let anchor = heading;
-    // The duration line immediately follows the title; keep them together.
-    if (anchor.nextElementSibling && anchor.nextElementSibling.tagName === 'P') {
-      anchor = anchor.nextElementSibling;
-    }
-    if (meter.previousElementSibling !== anchor) anchor.after(meter);
+  // Split a recap into its header (the title + duration lines bot.py's template
+  // writes) and the rest, so the two render into separate containers with the
+  // past-session meter between them.
+  //
+  // The shape is OURS, not the model's — bot.py writes "# Study session — <doc>"
+  // and "Duration: mm:ss" as a literal template, and the model's output starts
+  // below them. Anything that does not match that exact shape is treated as all
+  // body, so an unexpected recap renders whole rather than losing its first two
+  // lines to a bad guess.
+  function splitRecap(md) {
+    const lines = String(md).split('\n');
+    const looksLikeHeader = lines.length > 2
+      && lines[0].startsWith('# ')
+      && lines[1].startsWith('Duration:');
+    if (!looksLikeHeader) return { header: '', body: md };
+    return {
+      header: lines.slice(0, 2).join('\n'),
+      body: lines.slice(2).join('\n').replace(/^\n+/, ''),
+    };
   }
 
   function renderCoverage(cov) {
@@ -1822,7 +1835,6 @@
       $('past-coverage-text').textContent =
         `${pct}% after this session · ${figure.covered} of ${figure.total} claims${delta}`;
       $('past-coverage').style.display = '';
-      placePastMeter();
       return;
     }
     {
