@@ -103,6 +103,13 @@ running `start.sh` on `0.0.0.0:7860`, exposed publicly via Tailscale Funnel
   with `--reload`, localhost-only, reusing the main venv and reading `.env` read-only. The lane
   isolates **code, not data** — it still writes to shared `~/.voice-tutor/` + `~/second-brain/`
   and uses the same `tokens.json`.
+- **Keep the live checkout on `main`; do feature work in the worktree.** The launchd agent runs
+  from `~/development/voice-tutor`, so whatever branch is checked out there is what an unplanned
+  restart (KeepAlive, reboot, crash) will serve — a half-finished feature branch included. Static
+  files are worse than that: they are served per-request, so a branch checkout changes what a live
+  tester sees with no restart at all. Checking out a feature branch there to run the suite is fine;
+  leaving it there is not. Switch back to `main` when done. (Caught twice on 2026-08-06,
+  self-corrected both times.)
 - **Rebase `local-dev` before trusting a local test.** The worktree is a branch, not a mirror: every
   merge to `main` leaves it further behind, and `dev.sh` happily serves the stale code with no
   warning that it's out of date. On 2026-08-02 it sat 4 commits behind — it would still have
