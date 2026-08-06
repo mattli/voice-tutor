@@ -785,6 +785,36 @@
     margin: 8px 0 0;
   }
 
+  /* Pre-connect: where you stand on this document, right before starting. Sized
+     to sit UNDER the title and summary, not to compete with them — the Start
+     button is still the loudest thing on the screen. */
+  .precov {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 14px;
+  }
+  .precov__bar {
+    flex: 1;
+    max-width: 180px;
+    height: 5px;
+    background: var(--paper-2);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .precov__fill {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    opacity: 0.75;
+  }
+  .precov__text {
+    font-size: 13px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
   /* Picker rows: the same bar at list scale. Absent — not zeroed — for a
      document with no judged sessions. */
   .doc__cov {
@@ -997,6 +1027,13 @@
     <p class="session__doc-meta" id="session-doc-meta"></p>
     <p class="session__summary" id="session-doc-summary" style="display:none;"></p>
 
+    <!-- Where you stand on this document, at the moment you're about to begin.
+         Absent for a document with no judged sessions. -->
+    <div class="precov" id="session-coverage" style="display:none;">
+      <span class="precov__bar"><span class="precov__fill" id="session-coverage-fill"></span></span>
+      <span class="precov__text" id="session-coverage-text"></span>
+    </div>
+
     <div class="session__divider"></div>
 
     <div id="session-idle">
@@ -1026,7 +1063,7 @@
            learning artifact for the user, not machine telemetry. Absent entirely
            when there is no coverage data — never an error, never an empty bar. -->
       <div class="coverage" id="coverage-card" style="display:none;">
-        <p class="coverage__label">Coverage</p>
+        <p class="coverage__label" id="coverage-label">Coverage</p>
         <div class="coverage__row">
           <span class="coverage__pct" id="coverage-pct"></span>
           <span class="coverage__delta" id="coverage-delta"></span>
@@ -1135,6 +1172,8 @@
   let elapsedTimer = null;
   let pollTimer = null;
   let pollAttempts = 0;
+  // Which coverage treatment the ended view renders. See startPolling().
+  let viewingPastSession = false;
 
   function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function fmtTime(s) {
@@ -1219,7 +1258,20 @@
       if (!data || typeof data.documents !== 'object' || data.documents === null) return;
       coverage = data.documents;
       renderDocs();
+      renderSessionCoverage();
     } catch {}
+  }
+
+  // Pre-connect meter. Reads the SAME payload the picker bars use — no second
+  // request, and no chance of the two screens disagreeing about a document.
+  function renderSessionCoverage() {
+    const el = $('session-coverage');
+    const c = currentDoc && coverage[currentDoc.document_id];
+    if (!c || !c.total || typeof c.percentage !== 'number') { el.style.display = 'none'; return; }
+    const pct = Math.max(0, Math.min(100, c.percentage));
+    $('session-coverage-fill').style.width = `${pct}%`;
+    $('session-coverage-text').textContent = `${pct}% covered · ${c.covered} of ${c.total} claims`;
+    el.style.display = '';
   }
 
   function coverageMarkup(docId) {
@@ -1397,6 +1449,7 @@
     } else {
       summaryEl.style.display = 'none';
     }
+    renderSessionCoverage();
     showState('session-idle');
   }
 
@@ -1574,6 +1627,7 @@
     $('coverage-card').style.display = 'none';
     $('coverage-fill').style.width = '0';
     $('coverage-delta').textContent = '';
+    $('coverage-label').textContent = 'Coverage';
     recapInlineLoading.style.display = 'none';
     updateContextLinks();
   }
@@ -1614,7 +1668,14 @@
   // POLL_DONE_END
 
   // ─── telemetry polling ─────────────────────────────
+  // FRESH vs PAST is decided by HOW THIS SCREEN WAS REACHED, not by any
+  // property of the data — there is no timestamp comparison and no threshold to
+  // drift. startPolling() is reached only by hanging up on a live session, so it
+  // is the one entry point that means "this just happened"; loadSessionView() is
+  // the only other way in (history list, "View last session", ?session= on load)
+  // and always means "looking back".
   function startPolling() {
+    viewingPastSession = false;
     if (pollTimer) clearInterval(pollTimer);
     pollAttempts = 0;
     const target = sessionId;
@@ -1686,19 +1747,37 @@
   // absent. No coverage at all means the card never appears; there is no error
   // state and no spinner, because nothing here is worth telling the user about.
   function renderCoverage(cov) {
-    const total = cov && cov.total;
-    if (!total || !total.total || typeof total.percentage !== 'number') return;
-    const pct = Math.max(0, Math.min(100, total.percentage));
+    if (!cov) return;
+    // A PAST session shows where the document stood when that session ended,
+    // not where it stands now: the current total is the same number on every
+    // past session, so it says nothing about the one on screen. A session with
+    // no judged coverage of its own has no such moment — nothing renders,
+    // rather than borrowing the document's current number and implying this
+    // session produced it.
+    const figure = viewingPastSession ? cov.at_session : cov.total;
+    if (!figure || !figure.total || typeof figure.percentage !== 'number') return;
+
+    const pct = Math.max(0, Math.min(100, figure.percentage));
     $('coverage-pct').textContent = `${pct}%`;
     $('coverage-fill').style.width = `${pct}%`;
-    const sessions = total.sessions === 1 ? '1 session' : `${total.sessions} sessions`;
-    $('coverage-meta').textContent = `${total.covered} of ${total.total} claims · ${sessions}`;
+
     const session = cov.session;
-    $('coverage-delta').textContent = !session
-      ? ''
-      : session.new_claims > 0
-        ? `+${session.new_claims} new this session`
-        : 'no new claims this session';
+    if (viewingPastSession) {
+      $('coverage-label').textContent = 'Coverage after this session';
+      $('coverage-meta').textContent = `${figure.covered} of ${figure.total} claims`;
+      $('coverage-delta').textContent = !session
+        ? ''
+        : session.new_claims > 0 ? `+${session.new_claims} new` : 'nothing new';
+    } else {
+      const sessions = figure.sessions === 1 ? '1 session' : `${figure.sessions} sessions`;
+      $('coverage-label').textContent = 'Coverage';
+      $('coverage-meta').textContent = `${figure.covered} of ${figure.total} claims · ${sessions}`;
+      $('coverage-delta').textContent = !session
+        ? ''
+        : session.new_claims > 0
+          ? `+${session.new_claims} new this session`
+          : 'no new claims this session';
+    }
     $('coverage-card').style.display = '';
   }
 
@@ -1745,7 +1824,11 @@
     sessionStartMs = null;
     listeningLabel.textContent = 'Connecting…';
     resetDiagnostics();
+    renderSessionCoverage();
     showState('session-idle');
+    // The session just ended may have moved the number, so re-read it rather
+    // than showing the figure this screen was last rendered with.
+    loadCoverage();
   });
 
   // ─── scroll position preserved across viewer navigation ──
@@ -1774,6 +1857,7 @@
 
   // ─── load a past session into recap-ready (no polling) ─
   async function loadSessionView(sid) {
+    viewingPastSession = true;
     let data;
     try {
       const r = await fetch(`/api/sessions/${sid}/telemetry`);

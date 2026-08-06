@@ -260,19 +260,43 @@ def _newest_map_group(entries: list[tuple[Path, dict]]) -> tuple[list[tuple[Path
     return kept, sum(len(v) for k, v in groups.items() if k != winner_key)
 
 
+def _judged_at_of(sidecar: dict) -> str:
+    """A sidecar's ``judged_at`` as a sortable string; ``""`` when it has none.
+
+    Missing sorts OLDEST, which puts an unstamped sidecar inside every as-of
+    snapshot rather than outside all of them. That is the safe direction: the
+    session it records did happen before the one being viewed in every case we
+    can actually produce (stamping has been unconditional since the writer
+    shipped), and excluding it would understate a historical number.
+    """
+    value = sidecar.get("judged_at")
+    return value if isinstance(value, str) else ""
+
+
 def _union_from(
-    sidecars: list[tuple[Path, dict]], document_id: str, source_hash: str | None
+    sidecars: list[tuple[Path, dict]],
+    document_id: str,
+    source_hash: str | None,
+    as_of: str | None = None,
 ) -> dict:
     """Pure merge half of :func:`union_for_document` — no file I/O of its own.
 
     Split out so one directory scan can serve many documents
     (:func:`documents_view`) and so the degradation rules are testable without a
     filesystem.
+
+    ``as_of`` — when given, only sidecars judged AT OR BEFORE that timestamp
+    contribute, producing the union as it stood at that moment. This is what
+    makes a past session's screen show where the document stood when that
+    session ended, instead of a number that changed afterwards for reasons that
+    session had nothing to do with.
     """
     matching: list[tuple[Path, dict]] = []
     stale = 0
     for path, sidecar in sidecars:
         if sidecar.get("document_id") != document_id:
+            continue
+        if as_of is not None and _judged_at_of(sidecar) > as_of:
             continue
         if source_hash is not None:
             # Two independent layers, both non-fatal: the envelope's declared
@@ -337,7 +361,10 @@ def _union_from(
 
 
 def union_for_document(
-    user_id: str, document_id: str, source_hash: str | None = None
+    user_id: str,
+    document_id: str,
+    source_hash: str | None = None,
+    as_of: str | None = None,
 ) -> dict:
     """Union coverage across every session ``user_id`` has run on ``document_id``.
 
@@ -383,9 +410,15 @@ def union_for_document(
     version (correct behaviour); ``invalid_sessions`` counts this document's
     sidecars that were structurally broken (a defect — each one is also logged
     with its path). Keeping them apart matters: one is the system working, the
-    other is the system losing data. Reads files but makes no model call.
+    other is the system losing data.
+
+    ``as_of`` — a ``judged_at`` cutoff; only sessions judged at or before it
+    contribute, giving the union AS IT STOOD then. Reads files but makes no
+    model call.
     """
-    return _union_from(list(_iter_sidecar_files(user_id)), document_id, source_hash)
+    return _union_from(
+        list(_iter_sidecar_files(user_id)), document_id, source_hash, as_of
+    )
 
 
 def documents_view(user_id: str, identity_for) -> dict[str, dict]:
@@ -520,14 +553,29 @@ def session_view(
     source_hash: str | None = None,
     claims_total=None,
 ) -> dict | None:
-    """The ended view's coverage block: the document total plus this session's delta.
+    """The ended view's coverage block: the document total, this session's
+    snapshot, and this session's delta.
 
-    Returns ``{"total": {...} | None, "session": {...} | None}``, or None when
-    there is nothing to show at all (no document, or no coverage anywhere yet) so
-    the caller can emit a null field and the UI can stay silent. The two halves
-    are INDEPENDENT by design: a session whose judge failed still shows the
-    document's accumulated total, and a document being read before its first
-    judged session still shows nothing rather than a zero.
+    Returns ``{"total": {...} | None, "at_session": {...} | None,
+    "session": {...} | None}``, or None when there is nothing to show at all
+    (no document, or no coverage anywhere yet) so the caller can emit a null
+    field and the UI can stay silent.
+
+    THREE INDEPENDENT HALVES, because two different screens read this:
+
+      * ``total`` — where the document stands NOW. Correct on the screen you
+        land on when you hang up: that is the live number at that moment.
+      * ``at_session`` — where it stood when THIS session ended (the union of
+        every session judged at or before it). This is what a past session's
+        screen needs: the current total is identical on every past session, so
+        it says nothing about the one being viewed and reads as a claim about
+        it that isn't true. Scrolling back through history should show an
+        ascending record, not the same number N times.
+      * ``session`` — what this session added.
+
+    A session whose judge produced nothing has ``at_session`` and ``session``
+    None while ``total`` still renders, so a failed judge never costs the
+    document's number.
     """
     if not document_id:
         return None
@@ -536,9 +584,22 @@ def session_view(
     contribution = session_contribution(
         user_id, session_id, document_id, source_hash=source_hash
     )
-    if total is None and contribution is None:
+
+    # The snapshot is keyed on this session's OWN judged_at, so it needs the
+    # sidecar; without one there is no moment to take a snapshot at.
+    at_session = None
+    own = load_sidecar(user_id, session_id)
+    if own and own.get("document_id") == document_id:
+        as_of = _judged_at_of(own)
+        if as_of:
+            at_session = as_display(
+                union_for_document(user_id, document_id, source_hash, as_of),
+                claims_total,
+            )
+
+    if total is None and contribution is None and at_session is None:
         return None
-    return {"total": total, "session": contribution}
+    return {"total": total, "at_session": at_session, "session": contribution}
 
 
 # --------------------------------------------------------------------------- #

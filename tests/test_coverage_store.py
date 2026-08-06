@@ -590,6 +590,104 @@ def test_session_view_carries_both_halves_for_a_judged_session(store_dir):
     assert view["session"] == {"covered": 2, "new_claims": 1}
 
 
+# --------------------------------------------------------------------------- #
+# The historical snapshot: where the document stood when a session ended.
+# --------------------------------------------------------------------------- #
+
+def _three_sessions(store_dir):
+    _write_raw(store_dir, "matt", "first", claims_total=10,
+               judged_at="2026-08-01T00:00:00", verdicts=[
+                   {"claim_id": "c1", "covered": True, "turns": [1]},
+                   {"claim_id": "c2", "covered": False, "turns": []},
+               ])
+    _write_raw(store_dir, "matt", "second", claims_total=10,
+               judged_at="2026-08-02T00:00:00", verdicts=[
+                   {"claim_id": "c2", "covered": True, "turns": [1]},
+                   {"claim_id": "c3", "covered": True, "turns": [2]},
+               ])
+    _write_raw(store_dir, "matt", "third", claims_total=10,
+               judged_at="2026-08-03T00:00:00", verdicts=[
+                   {"claim_id": "c4", "covered": True, "turns": [1]},
+               ])
+
+
+def test_the_snapshot_is_the_union_AS_OF_that_session_not_today(store_dir):
+    # The whole point: a past session's screen is about THAT session, so it must
+    # not show a number that changed afterwards for reasons it had nothing to do
+    # with.
+    _three_sessions(store_dir)
+    now = cs.union_for_document("matt", "doc-A", "hash-A")
+    assert len(now["covered_ids"]) == 4
+    at_first = cs.union_for_document("matt", "doc-A", "hash-A", as_of="2026-08-01T00:00:00")
+    assert at_first["covered_ids"] == ["c1"]
+    assert at_first["sessions"] == 1
+
+
+def test_the_snapshot_INCLUDES_the_session_being_viewed(store_dir):
+    # "At or before", not "before": the number is where you stood when the
+    # session ENDED, which includes what it just contributed.
+    _three_sessions(store_dir)
+    at_second = cs.union_for_document("matt", "doc-A", "hash-A", as_of="2026-08-02T00:00:00")
+    assert at_second["covered_ids"] == ["c1", "c2", "c3"]
+    assert at_second["sessions"] == 2
+
+
+def test_snapshots_ascend_through_history(store_dir):
+    # Scrolling back through past sessions should read as a record of progress.
+    _three_sessions(store_dir)
+    counts = [
+        len(cs.union_for_document("matt", "doc-A", "hash-A", as_of=stamp)["covered_ids"])
+        for stamp in ("2026-08-01T00:00:00", "2026-08-02T00:00:00", "2026-08-03T00:00:00")
+    ]
+    assert counts == [1, 3, 4]
+    assert counts == sorted(counts), "coverage is append-only; a snapshot can never retreat"
+
+
+def test_session_view_carries_the_snapshot_and_the_current_total_separately(store_dir):
+    # The fresh ended view leads with `total`, a past session with `at_session`.
+    # Both must be present so the client picks, rather than the server guessing
+    # which screen is asking.
+    _three_sessions(store_dir)
+    view = cs.session_view("matt", "first", "doc-A", source_hash="hash-A", claims_total=10)
+    assert view["total"] == {"covered": 4, "total": 10, "percentage": 40.0, "sessions": 3}
+    assert view["at_session"] == {"covered": 1, "total": 10, "percentage": 10.0, "sessions": 1}
+    assert view["session"] == {"covered": 1, "new_claims": 1}
+
+
+def test_the_snapshot_is_absent_when_the_session_has_no_coverage_of_its_own(store_dir):
+    # No sidecar means no moment to take a snapshot at. The document's current
+    # total still renders for the fresh view; the past view shows nothing rather
+    # than borrowing a number this session did not produce.
+    _three_sessions(store_dir)
+    view = cs.session_view("matt", "unjudged", "doc-A", source_hash="hash-A", claims_total=10)
+    assert view["at_session"] is None
+    assert view["session"] is None
+    assert view["total"]["covered"] == 4
+
+
+def test_a_snapshot_never_reaches_into_another_users_history(store_dir):
+    _write_raw(store_dir, "matt", "mine", judged_at="2026-08-02T00:00:00", verdicts=[
+        {"claim_id": "c1", "covered": True, "turns": [1]},
+    ])
+    _write_raw(store_dir, "someone-else", "theirs", user_id="someone-else",
+               judged_at="2026-08-01T00:00:00", verdicts=[
+                   {"claim_id": "c2", "covered": True, "turns": [1]},
+               ])
+    snap = cs.union_for_document("matt", "doc-A", "hash-A", as_of="2026-08-02T00:00:00")
+    assert snap["covered_ids"] == ["c1"]
+
+
+def test_an_unstamped_sidecar_lands_INSIDE_every_snapshot(store_dir):
+    # Missing judged_at sorts oldest. Under-counting a historical number would be
+    # the worse failure, and every sidecar the writer produces is stamped.
+    _write_raw(store_dir, "matt", "unstamped", verdicts=[
+        {"claim_id": "c9", "covered": True, "turns": [1]},
+    ])
+    _three_sessions(store_dir)
+    snap = cs.union_for_document("matt", "doc-A", "hash-A", as_of="2026-08-01T00:00:00")
+    assert "c9" in snap["covered_ids"]
+
+
 def test_a_crafted_session_id_cannot_read_another_users_contribution(store_dir):
     _write_raw(store_dir, "victim", "secret", user_id="victim", verdicts=[
         {"claim_id": "c1", "covered": True, "turns": [1]},
