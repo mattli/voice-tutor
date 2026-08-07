@@ -213,3 +213,19 @@ against `labels.json`. Anything inside ±1–2 claims per session is noise. The
 near-miss worth remembering: the union hit 16 claims in both runs with *different
 composition* — **a stable total is not evidence of a stable verdict set**; compare
 id sets, not counts.
+
+**Majority-of-3 is not enough near the boundary (2026-08-07).** A 7-run
+measurement found per-claim flip RATES, not a uniform wobble: `c31` came back
+covered 3/7, `c28` 5/7, `c9` 6/7. Three samples of a 3/7 claim report the wrong
+majority about a third of the time — and did, twice in one session, in OPPOSITE
+directions: first the stored single-run sidecar, then a 3-run check that reversed
+it. Both readings were wrong, same cause. For a claim you already suspect is
+borderline, **7 runs and a reported rate**, never a majority verdict.
+
+And note v1 was deterministic on the same session (12 covered, identical every
+run, zero unstable claims), so instability is a property of the PROMPT, not of the
+judge in general — flip rate is something to measure when changing prompts, not a
+constant to budget around. Related: an instruction to identify parts is an
+instruction to find parts — a v3 draft that added an explicit REQUIRED PARTS step
+got MORE decompositional and lost a claim the old prompt held. Full write-up:
+`products/voice-tutor/validation/coverage-experiment/README.md`.
