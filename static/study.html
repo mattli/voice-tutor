@@ -1162,6 +1162,18 @@
   // ─── constants ─────────────────────────────────────
   const MIN_RECAP_DURATION_SEC = 5;
   const MAX_POLL_ATTEMPTS = 30;  // 30 × 2s = 60s
+  // Coverage alone may keep polling to 120s. THE JUDGE LOSES THE 60s RACE ON
+  // LONG SESSIONS: its latency scales with BOTH transcript turns and claim-map
+  // size (it emits a verdict per claim), so the documented 10-40s is a
+  // short-session figure. Measured 2026-08-06 on a real session — 125 turns
+  // against a 63-claim map took 61.5s, landing 1.5s after the poll gave up, so
+  // the card never appeared at all. Everything else (recap, cost, summary) has
+  // rendered well before 60s, so the extra window is invisible: no spinner, no
+  // held UI, just a request every 2s for something that is genuinely still
+  // coming. 120s BUYS HEADROOM, IT DOES NOT SOLVE THIS — a fixed display budget
+  // will keep losing to a judge whose cost grows with the work. Incremental
+  // judging (phase 2) is the actual fix.
+  const COVERAGE_MAX_POLL_ATTEMPTS = 60;  // 60 × 2s = 120s
 
   // ─── DOM refs ──────────────────────────────────────
   const $ = id => document.getElementById(id);
@@ -1694,8 +1706,19 @@
   // AND the session cleared the turn floor — i.e. only when a sidecar is really
   // coming. When it is FALSE the client waits for nothing: no extra poll, no
   // held done-condition, and nothing coverage-related is rendered at all. This
-  // can never extend polling past MAX_POLL_ATTEMPTS; it only avoids finishing
-  // early on a session whose coverage is still in flight.
+  // does not by itself extend polling; it only avoids finishing early on a
+  // session whose coverage is still in flight.
+  //
+  // THE ONE SANCTIONED EXTENSION past MAX_POLL_ATTEMPTS lives in startPolling:
+  // a 'pending' status, and ONLY a pending status, may carry the poll to
+  // COVERAGE_MAX_POLL_ATTEMPTS (120s). This is not a violation of the 60s
+  // budget rule but its narrow exception, and it is safe for two reasons the
+  // original rule did not have: the server now distinguishes "still coming"
+  // from "never coming" (a failed judge settles immediately and cannot spin),
+  // and by 60s every artifact the user is actually waiting on has rendered, so
+  // the extra window costs a background request every 2s and nothing visible.
+  // The recap's own deadline is unchanged at 60s — a missing recap at that
+  // point is still reported, never waited on.
   // data.coverage_status is the settled-vs-still-coming signal: only 'pending'
   // holds the poll open. Waiting on the ARTIFACT instead (coverage.session
   // appearing) could never be satisfied by a judge that failed, so every
@@ -1713,6 +1736,18 @@
       && (!expectsSummary || (data.memory_append && (!isMatt || data.analysis)))
       && (!expectsCoverage || coverageSettled));
   }
+
+  // Whether the poll may keep running once it has hit MAX_POLL_ATTEMPTS — the
+  // one sanctioned extension, described above. Pure and inside the sentinel
+  // block so a test can fail on it: this used to be an inline condition in
+  // tick(), which is exactly the shape of logic no test can reach.
+  function pollMayExtend(attempts, recapShown, coveragePending, maxAttempts, coverageMaxAttempts) {
+    if (attempts < maxAttempts) return true;
+    // A missing recap at 60s is a failure to REPORT, not a slow artifact to
+    // wait for — its deadline is unchanged by the coverage extension.
+    if (!recapShown) return false;
+    return !!coveragePending && attempts < coverageMaxAttempts;
+  }
   // POLL_DONE_END
 
   // ─── telemetry polling ─────────────────────────────
@@ -1727,6 +1762,7 @@
     endedViewFrom = 'picker';   // a session you just finished has no list behind it
     if (pollTimer) clearInterval(pollTimer);
     pollAttempts = 0;
+    let coverageStillPending = false;
     const target = sessionId;
     const tick = async () => {
       if (target !== sessionId) return;
@@ -1747,14 +1783,21 @@
             clearInterval(pollTimer); pollTimer = null;
             return;
           }
+          // Only a still-running judge earns the longer window, and only once
+          // everything else has landed. Anything else missing at 60s is a
+          // failure to report, not a slow artifact to wait for.
+          coverageStillPending = data.coverage_status === 'pending';
         }
       } catch {}
-      if (pollAttempts >= MAX_POLL_ATTEMPTS) {
+      const recapShown = !(recapBody.style.display === 'none'
+                           && recapShort.style.display === 'none');
+      if (!pollMayExtend(pollAttempts, recapShown, coverageStillPending,
+                         MAX_POLL_ATTEMPTS, COVERAGE_MAX_POLL_ATTEMPTS)) {
         clearInterval(pollTimer); pollTimer = null;
         // If the recap never landed, surface a soft error in the inline loader.
         // Otherwise stay quiet — diagnostics may have been skipped server-side
         // and the user can already see which ones did and didn't appear.
-        if (recapBody.style.display === 'none' && recapShort.style.display === 'none') {
+        if (!recapShown) {
           recapInlineLoadingLabel.textContent = 'Recap didn’t generate within 60s — check server logs.';
         }
       }

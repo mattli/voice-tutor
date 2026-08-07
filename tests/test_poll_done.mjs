@@ -15,6 +15,7 @@ const html = readFileSync(
 const m = html.match(/\/\/ POLL_DONE_START([\s\S]*?)\/\/ POLL_DONE_END/);
 assert(m, 'pollIsDone sentinel block not found in study.html');
 const pollIsDone = new Function(m[1] + '\nreturn pollIsDone;')();
+const pollMayExtend = new Function(m[1] + '\nreturn pollMayExtend;')();
 
 const R = 'recap', C = { total: 1 };
 
@@ -96,4 +97,29 @@ assert.strictEqual(
   pollIsDone({ recap: R, cost: C, has_prompt: false, expects_summary: false, expects_coverage: true, coverage: { total: { covered: 16, total: 63 }, session: { covered: 7, new_claims: 4 } } }, false),
   true, 'no coverage_status, delta present → done (legacy fallback)');
 
+// ── the one sanctioned extension past the 60s cap ──
+// The judge loses the 60s race on long sessions (measured: 61.5s on a 125-turn
+// transcript against a 63-claim map, landing 1.5s after the poll gave up, so
+// the card never appeared). A pending judge — and nothing else — may carry the
+// poll to 120s.
+const MAX = 30, COV_MAX = 60;
+const ext = (a, recap, pending) => pollMayExtend(a, recap, pending, MAX, COV_MAX);
+
+assert.strictEqual(ext(10, true, true), true, 'under the cap → keep polling');
+assert.strictEqual(ext(10, false, false), true, 'under the cap → keep polling regardless');
+
+assert.strictEqual(ext(30, true, true), true, 'at 60s, recap shown, judge pending → extend');
+assert.strictEqual(ext(59, true, true), true, 'still under 120s → extend');
+assert.strictEqual(ext(60, true, true), false, '120s is a hard stop, not open-ended');
+
+// Only a PENDING judge earns it. A settled outcome must not extend anything.
+assert.strictEqual(ext(30, true, false), false, 'nothing pending → stop at 60s');
+
+// The recap's own deadline is untouched: a missing recap at 60s is a failure to
+// report, not a slow artifact to wait for. Extending here would delay the error
+// by a further 60s — the opposite of the point.
+assert.strictEqual(ext(30, false, true), false, 'no recap at 60s → report, never extend');
+assert.strictEqual(ext(30, false, false), false, 'no recap, nothing pending → report');
+
 console.log('poll-done: all 15 cases passed');
+console.log('poll-extend: all 8 cases passed');
