@@ -576,9 +576,10 @@ def _hash_source(document_text: str) -> str:
     """Stable content hash of the input text — the cache-integrity key.
 
     A cached rubric is only valid for the exact document it was generated from.
-    The served document can drift (e.g. a vault page edited after the rubric was
-    cached), so the hash lets get-or-create detect skew and regenerate rather
-    than serve a rubric that silently disagrees with the current text.
+    The hash is what lets get-or-create detect that the stored text no longer
+    matches the text the rubric was extracted from — CAUSE UNSPECIFIED, because
+    the code cannot know one — and regenerate rather than serve a rubric that
+    silently disagrees with the current text.
     """
     return hashlib.sha256(document_text.encode("utf-8")).hexdigest()
 
@@ -763,6 +764,26 @@ def load_fresh_claims(user_id: str, doc_id: str, document_text: str) -> list[Cla
         return load_claims(ns, doc_id)
     except (ValueError, OSError, ClaimParseError):
         return None
+
+
+def fresh_map_identity(user_id: str, doc_id: str, document_text: str) -> dict | None:
+    """Identity + size of ``doc_id``'s claim map, ONLY if it is fresh; else None.
+
+    Returns ``{"source_hash": <str>, "claims_total": <int>}`` — everything a
+    coverage reader needs to (a) filter sidecars to the map they were judged
+    against and (b) show "N of TOTAL covered" — without loading the claims
+    themselves into a caller that must never display them.
+
+    Freshness is the SAME gate as :func:`load_fresh_claims`, deliberately: a
+    stale map is one a study session would not steer with, so coverage measured
+    against it is progress through a rubric no longer in use. Reporting it would
+    show a number the product is no longer working toward. Non-blocking file I/O
+    only; never triggers extraction, never raises.
+    """
+    claim_list = load_fresh_claims(user_id, doc_id, document_text)
+    if not claim_list:
+        return None
+    return {"source_hash": _hash_source(document_text), "claims_total": len(claim_list)}
 
 
 def generate_claims(user_id: str, doc_id: str, document_text: str) -> list[Claim]:

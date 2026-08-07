@@ -35,6 +35,7 @@ from pipecat_ai_small_webrtc_prebuilt.frontend import SmallWebRTCPrebuiltUI
 
 import bot
 import claims
+import coverage_store
 import documents
 import identity
 import session_naming
@@ -327,6 +328,67 @@ async def list_documents_route(user_id: str = Depends(require_user)):
     return await documents.list_documents(user_id)
 
 
+@app.delete("/api/documents/{doc_id}")
+async def remove_document(doc_id: str, user_id: str = Depends(require_user)):
+    """Archive ``doc_id`` out of the picker. Never deletes; always reversible.
+
+    Strictly user-scoped: the archive path is built from the AUTHENTICATED
+    user_id, so a crafted id can only ever move a document the caller owns. A
+    shared document is refused with 409 rather than removed for everybody.
+    """
+    try:
+        return documents.archive_document(user_id, Path(doc_id).name)
+    except documents.DocumentActionError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+@app.post("/api/documents/{doc_id}/restore")
+async def restore_document_route(doc_id: str, user_id: str = Depends(require_user)):
+    """Undo an archive. Backs the toast, and the manual recovery path after it."""
+    try:
+        return documents.restore_document(user_id, Path(doc_id).name)
+    except documents.DocumentActionError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+def _fresh_map_identity(user_id: str, doc_id: str) -> dict | None:
+    """Claim-map identity for ``doc_id``, or None when there is no fresh map.
+
+    The join between the document layer (which owns the text) and the coverage
+    reader (which must not import it). Resolves through ``documents.load_document``
+    so the shared namespace works exactly as it does for study.
+    """
+    loaded = documents.load_document(user_id, Path(doc_id).name)
+    if loaded is None:
+        return None
+    return claims.fresh_map_identity(user_id, Path(doc_id).name, loaded[1])
+
+
+@app.get("/api/coverage")
+async def coverage_overview(user_id: str = Depends(require_user)):
+    """Accumulated coverage per document, for the picker's progress bars.
+
+    ONE call serves the whole list — the picker must not become an N+1. Scoped
+    entirely to the authenticated user: the document ids come out of that user's
+    OWN coverage sidecars, so this route accepts no client-supplied id at all.
+
+    Documents with no coverage are ABSENT from the map rather than present at 0%
+    (a document never studied and a document studied to no effect read
+    differently to a person). Any failure degrades to an empty map: the picker
+    then renders exactly as it does today, with no bars and no error — the bars
+    are an enhancement to a list that must keep working without them.
+    """
+    try:
+        return {
+            "documents": coverage_store.documents_view(
+                user_id, lambda doc_id: _fresh_map_identity(user_id, doc_id)
+            )
+        }
+    except Exception as e:  # noqa: BLE001 - coverage never breaks the picker
+        print(f"[coverage] overview failed for {user_id}: {e!r}", flush=True)
+        return {"documents": {}}
+
+
 # Claim-map warming. Claim extraction is a 30-60s live LLM call on an uncached
 # doc, so it must NOT run on the session-start path (it would hang the pipeline).
 # Instead the frontend fires this endpoint the moment a doc is selected, warming
@@ -502,16 +564,75 @@ def _lookup_session_doc(user_id: str, session_id: str) -> dict | None:
                 continue
             if entry.get("kind") == "session" and entry.get("session_id") == session_id:
                 doc_id = entry.get("document_id")
-                loaded = documents.load_document(user_id, doc_id) if doc_id else None
+                # resolve_title, not load_document: a session on a since-archived
+                # document keeps its name in history. It never makes the document
+                # studyable again — only the title is resolved.
                 return {
                     "document_id": doc_id,
-                    "document_title": loaded[0] if loaded else None,
+                    "document_title": documents.resolve_title(user_id, doc_id) if doc_id else None,
                 }
     return None
 
 
+def _session_coverage(
+    user_id: str, session_id: str, doc_id: str | None
+) -> tuple[dict | None, bool, str]:
+    """Return ``(coverage_block, expects_coverage, status)`` for the ended view.
+
+    ``expects_coverage`` mirrors ``expects_summary``: the SERVER saying whether a
+    coverage sidecar is actually coming, so the client waits only for something
+    that will arrive. It is true only when every condition bot.py's teardown
+    checks is true — the judge is enabled, the document has a FRESH claim map
+    (bot.py judges only when ``load_fresh_claims`` returned one), and the session
+    cleared the same user-turn floor. False means the ended view has nothing to
+    wait for: no held poll, no spinner, nothing rendered.
+
+    ``status`` refines that into what is true RIGHT NOW, which
+    ``expects_coverage`` cannot express because it is computed from
+    preconditions and a precondition cannot know the judge later failed:
+
+      * ``"ready"``    — this session's sidecar is on disk.
+      * ``"pending"``  — expected, not yet written, no failure on record.
+      * ``"failed"``   — the ledger records a failed judge run; none is coming.
+      * ``"none"``     — no judge was ever expected for this session.
+
+    While ``pending``, the block's ``total`` is WITHHELD. The accumulated total
+    is a real number but it does not yet include the session the user just
+    finished, and rendering it under a bare "Coverage" heading on the screen you
+    land on when you hang up reads as a statement about that session. Absent is
+    the honest answer for those 10-40s; ``failed`` then releases it, so a broken
+    judge costs the delta rather than the document's number.
+
+    Never raises. Coverage is an addition to this composite, and it must not be
+    able to take down the endpoint the whole ended view polls.
+    """
+    if not doc_id:
+        return None, False, "none"
+    try:
+        identity_ = _fresh_map_identity(user_id, doc_id)
+        block = coverage_store.session_view(
+            user_id,
+            session_id,
+            doc_id,
+            source_hash=(identity_ or {}).get("source_hash"),
+            claims_total=(identity_ or {}).get("claims_total"),
+        )
+        expects = identity_ is not None
+        status = coverage_store.resolve_status(
+            has_sidecar=coverage_store.load_sidecar(user_id, session_id) is not None,
+            expects=expects,
+            judge_failed=sessions.coverage_judge_failed(user_id, session_id),
+        )
+        return coverage_store.finalize_for_status(block, status), expects, status
+    except Exception as e:  # noqa: BLE001 - never break the ended view's poll
+        print(f"[coverage] telemetry block failed for {session_id}: {e!r}", flush=True)
+        return None, False, "none"
+
+
 @app.get("/api/sessions/{session_id}/telemetry")
-async def get_telemetry(session_id: str, user_id: str = Depends(require_user)):
+async def get_telemetry(
+    session_id: str, doc: str | None = Query(None), user_id: str = Depends(require_user)
+):
     """Composite endpoint for the /study/ ended view. Each field is null until
     that artifact lands; the frontend polls and renders pieces progressively.
 
@@ -545,6 +666,32 @@ async def get_telemetry(session_id: str, user_id: str = Depends(require_user)):
         "document_id": doc_info["document_id"],
         "document_title": doc_info["document_title"],
     }
+    # Coverage: the accumulated document total plus what THIS session added.
+    #
+    # The ?doc= parameter matters for correctness, not convenience. doc_info
+    # comes from the session-log row, which teardown writes LAST — so during the
+    # entire teardown window (the exact window this endpoint is polled through)
+    # the document is unknown and coverage would be permanently absent, the same
+    # late-write trap that made /telemetry 404 for 60s. The ended view already
+    # knows its document, so it passes it; the ledger stays the fallback for a
+    # page load that doesn't. A crafted value is harmless: it only ever selects
+    # among the authenticated user's OWN sidecars and their own claim map.
+    coverage_doc_id = Path(doc).name if doc else doc_info["document_id"]
+    coverage_block, expects_coverage, coverage_status = _session_coverage(
+        user_id, safe_id, coverage_doc_id
+    )
+    result["coverage"] = coverage_block
+    result["expects_coverage"] = bool(
+        expects_coverage and bot.COVERAGE_JUDGE and result["expects_summary"]
+    )
+    # What the client waits on. "pending" is the ONLY value that holds the poll
+    # open: a judge that failed is a settled outcome, not a slow one, and the
+    # old done-condition (wait for coverage.session to appear) could never be
+    # satisfied by it — so every judge failure burned all 30 polls before the
+    # view gave up on a recap that had landed at 5s.
+    result["coverage_status"] = (
+        coverage_status if result["expects_coverage"] or coverage_status == "ready" else "none"
+    )
     return sessions.redact_telemetry_for_user(result, user_id)
 
 

@@ -191,6 +191,24 @@ by the rule above, and both bugs were ordering, not logic. **Time a real session
 end-to-end after any teardown change** and compare artifact mtimes against the
 disconnect timestamp; a green suite says nothing here.
 
+3. **A step whose cost GROWS WITH THE WORK, against a budget that doesn't.**
+   The two failures above were ordering — fixable by moving things. This one
+   isn't. The coverage judge's latency scales with **both** transcript turns
+   **and** claim-map size (it emits one verdict per claim, so its output tokens
+   grow with the map), while the display budget is a fixed 60s. Documented as a
+   10-40s call, which is the SHORT-SESSION figure. Measured 2026-08-06 on a real
+   session: **125 turns against a 63-claim map took 61.5s** and landed 1.5s
+   after the poll gave up — 6,315 output tokens, $0.0403. The card never
+   appeared at all, on a session that worked perfectly in every other respect.
+   **Rule:** a teardown step whose cost scales with session length or document
+   size cannot be sized against a constant deadline — measure it at the LARGEST
+   realistic input, not a convenient one. `COVERAGE_MAX_POLL_ATTEMPTS` (120s,
+   coverage only) buys headroom and **does not solve this**; the race returns on
+   a longer document or a longer session. Incremental judging during the session
+   (phase 2) is the actual fix, because it removes the work from teardown
+   instead of giving it more room. Detail:
+   `products/voice-tutor/validation/2026-08-06-coverage-read-path-review.md`.
+
 ## The judge is NOT reproducible at temperature 0 — verify prompt changes by majority-of-3 (2026-08-04)
 
 Re-judging an unchanged transcript, same prompt, same model, temperature 0, gave
@@ -202,3 +220,19 @@ against `labels.json`. Anything inside ±1–2 claims per session is noise. The
 near-miss worth remembering: the union hit 16 claims in both runs with *different
 composition* — **a stable total is not evidence of a stable verdict set**; compare
 id sets, not counts.
+
+**Majority-of-3 is not enough near the boundary (2026-08-07).** A 7-run
+measurement found per-claim flip RATES, not a uniform wobble: `c31` came back
+covered 3/7, `c28` 5/7, `c9` 6/7. Three samples of a 3/7 claim report the wrong
+majority about a third of the time — and did, twice in one session, in OPPOSITE
+directions: first the stored single-run sidecar, then a 3-run check that reversed
+it. Both readings were wrong, same cause. For a claim you already suspect is
+borderline, **7 runs and a reported rate**, never a majority verdict.
+
+And note v1 was deterministic on the same session (12 covered, identical every
+run, zero unstable claims), so instability is a property of the PROMPT, not of the
+judge in general — flip rate is something to measure when changing prompts, not a
+constant to budget around. Related: an instruction to identify parts is an
+instruction to find parts — a v3 draft that added an explicit REQUIRED PARTS step
+got MORE decompositional and lost a claim the old prompt held. Full write-up:
+`products/voice-tutor/validation/coverage-experiment/README.md`.

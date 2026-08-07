@@ -136,7 +136,10 @@ def resolve_document(user_id: str, doc_id: str):
                 # them; they have to carry the distinction.
                 if not txt.with_name(txt.stem + ".claims.json").exists():
                     return None, "no claim map extracted for this document", None
-                return None, "claim map is STALE (document changed since extraction)", None
+                return None, (
+                    "claim map is STALE (the stored text no longer matches the "
+                    "hash the map was extracted from)"
+                ), None
             return text, claims.source_hash_of(text), claim_objs
     return None, "document text not found on disk", None
 

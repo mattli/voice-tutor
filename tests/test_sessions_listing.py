@@ -460,6 +460,19 @@ def test_list_study_sessions_shared_doc_is_per_user(cost_log_tmp, docs_dir):
     assert sessions.list_study_sessions("dev") == []
 
 
+def test_history_keeps_the_title_after_the_document_is_archived(cost_log_tmp, docs_dir):
+    # Removing a document from the picker does not unhappen the sessions run
+    # against it, so their rows must not degrade to an untitled entry.
+    import documents
+
+    _seed_doc(docs_dir, "doc-arch", "Graph Engineering", user_id="matt")
+    _seed_session(cost_log_tmp, session_id="s1", document_id="doc-arch", user_id="matt")
+    assert sessions.list_study_sessions("matt")[0]["document_title"] == "Graph Engineering"
+
+    documents.archive_document("matt", "doc-arch")
+    assert sessions.list_study_sessions("matt")[0]["document_title"] == "Graph Engineering"
+
+
 def test_can_view_machine_artifacts_matt_only():
     # Mirror image: a non-matt user is denied prompt/analysis/cost-log surfaces.
     assert sessions.can_view_machine_artifacts("matt") is True
@@ -476,3 +489,67 @@ def test_redact_telemetry_strips_matt_only_fields_for_non_matt():
     assert red["analysis"] is None and red["has_prompt"] is False
     # Her own learning artifacts survive.
     assert red["recap"] == "r" and red["cost"] == {"x": 1} and red["memory_append"] == "m"
+
+
+# --------------------------------------------------------------------------- #
+# coverage_judge_failed: telling "still judging" from "never coming".
+#
+# A failed judge writes NO sidecar, so from the reader's side it is
+# indistinguishable from one still in flight — both are simply an absent file.
+# The ledger's kind="coverage" row is the only durable record that the run
+# finished at all. Without this, the ended view's poll waited for an artifact
+# that would never arrive and burned all 30 attempts.
+# --------------------------------------------------------------------------- #
+
+
+def _coverage_row(session_id, user_id="matt", status="ok", **extra):
+    row = {"kind": "coverage", "session_id": session_id, "user_id": user_id,
+           "status": status, "model": "claude-haiku-4-5-20251001"}
+    row.update(extra)
+    return json.dumps(row)
+
+
+def test_a_failed_judge_is_reported_as_failed(cost_log_tmp):
+    _write_ledger(cost_log_tmp, [_coverage_row("s1", status="failed",
+                                               error="APIError: overloaded")])
+    assert sessions.coverage_judge_failed("matt", "s1") is True
+
+
+def test_a_successful_judge_is_not_a_failure(cost_log_tmp):
+    _write_ledger(cost_log_tmp, [_coverage_row("s1", status="ok")])
+    assert sessions.coverage_judge_failed("matt", "s1") is False
+
+
+def test_no_row_yet_means_no_failure_on_record(cost_log_tmp):
+    # The run is still in flight. False means "keep waiting", never "give up" —
+    # the check only ever stops the poll on POSITIVE evidence of failure.
+    _write_ledger(cost_log_tmp, [_coverage_row("other-session", status="failed")])
+    assert sessions.coverage_judge_failed("matt", "s1") is False
+
+
+def test_a_missing_ledger_degrades_to_no_failure(cost_log_tmp, tmp_path, monkeypatch):
+    monkeypatch.setattr(sessions, "SESSION_LOG_JSONL_PATH", tmp_path / "absent.jsonl")
+    assert sessions.coverage_judge_failed("matt", "s1") is False
+
+
+def test_a_corrupt_ledger_line_never_raises(cost_log_tmp):
+    _write_ledger(cost_log_tmp, ["{not json", "", _coverage_row("s1", status="failed")])
+    assert sessions.coverage_judge_failed("matt", "s1") is True
+
+
+def test_another_users_failed_judge_is_not_mine(cost_log_tmp):
+    # The row carries user_id; a session id alone must not cross the boundary.
+    _write_ledger(cost_log_tmp, [_coverage_row("s1", user_id="sarah", status="failed")])
+    assert sessions.coverage_judge_failed("matt", "s1") is False
+
+
+def test_other_row_kinds_are_never_mistaken_for_a_coverage_verdict(cost_log_tmp):
+    # session/artifact rows carry their own status vocabulary. Dispatching on
+    # kind is what keeps this reader from reading someone else's field.
+    _write_ledger(cost_log_tmp, [
+        json.dumps({"kind": "session", "session_id": "s1", "user_id": "matt",
+                    "status": "aborted"}),
+        json.dumps({"kind": "artifact", "session_id": "s1", "user_id": "matt",
+                    "status": "failed"}),
+    ])
+    assert sessions.coverage_judge_failed("matt", "s1") is False

@@ -1003,7 +1003,7 @@ def test_union_coverage_percentage_nonterminating_rounds_by_convention():
     """2 of 3 distinct covered (66.666...) -> the module's fixed rounded value."""
     a = _verdict_set([("c1", True, [0]), ("c2", True, [1]), ("c3", False, [])])
     result = cj.union_coverage([a])
-    expected = round(100.0 * 2 / 3, cj._COVERAGE_PERCENTAGE_DECIMALS)
+    expected = round(100.0 * 2 / 3, cj.COVERAGE_PERCENTAGE_DECIMALS)
     assert result["percentage"] == expected
     # And the convention actually rounds (not left as the raw repeating float).
     assert result["percentage"] != 100.0 * 2 / 3
@@ -1016,13 +1016,13 @@ def test_union_coverage_denominator_counts_notcovered_across_sessions():
     # covered = {c1}; universe = {c1, c2, c3} -> 1/3.
     result = cj.union_coverage([a, b], allow_unidentified=True)
     assert set(result["covered_ids"]) == {"c1"}
-    assert result["percentage"] == round(100.0 / 3, cj._COVERAGE_PERCENTAGE_DECIMALS)
+    assert result["percentage"] == round(100.0 / 3, cj.COVERAGE_PERCENTAGE_DECIMALS)
 
 
 # --- c4: edge cases — empty + single-session. -------------------------------- #
 
 def test_union_coverage_empty_input_no_divide_by_zero():
-    assert cj.union_coverage([]) == {"covered_ids": [], "percentage": 0.0}
+    assert cj.union_coverage([]) == {"covered_ids": [], "judged_ids": [], "percentage": 0.0}
 
 
 def test_union_coverage_empty_verdict_lists_yield_zero():
@@ -1039,7 +1039,7 @@ def test_union_coverage_single_session_reproduces_its_own_result():
     assert set(result["covered_ids"]) == {"c1", "c3"}
     # 2 of 3 distinct judged -> the module's rounded value.
     assert result["percentage"] == round(
-        100.0 * 2 / 3, cj._COVERAGE_PERCENTAGE_DECIMALS
+        100.0 * 2 / 3, cj.COVERAGE_PERCENTAGE_DECIMALS
     )
 
 
@@ -2071,7 +2071,7 @@ def test_union_coverage_single_unidentified_set_needs_no_optin():
 
 
 def test_union_coverage_empty_input_still_needs_no_optin():
-    assert cj.union_coverage([]) == {"covered_ids": [], "percentage": 0.0}
+    assert cj.union_coverage([]) == {"covered_ids": [], "judged_ids": [], "percentage": 0.0}
 
 
 def test_truncation_error_is_NOT_retryable_by_type():
