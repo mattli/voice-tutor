@@ -97,6 +97,24 @@ running `start.sh` on `0.0.0.0:7860`, exposed publicly via Tailscale Funnel
 - **Restart production** (only when confirmed idle — a restart drops in-flight sessions):
   `launchctl kickstart -k gui/$(id -u)/com.voice-tutor.server`. No deploy pipeline exists:
   "deploy" = land code on `main` in `~/development/voice-tutor`, then kickstart.
+
+  **Probe the SERVER CHILD, not the launchd wrapper.** `launchctl print … | awk '/pid = /'`
+  returns the `start.sh` wrapper; the uvicorn process holding the sockets is its child, found
+  with `lsof -ti :7860`. Probing the wrapper returns ZERO sockets — indistinguishable from a
+  quiet server, and a false all-clear for a restart that would drop a live session. Idle check:
+  `lsof -nP -a -p $(lsof -ti :7860) -i` — confirm the TOTAL is non-zero (the probe works) before
+  reading UDP == 0 as idle. Hit 2026-08-07; caught only by checking the probe returned anything.
+
+  **A merge to `main` is HALF a deploy, and the half that lands is the CLIENT.** `static/`
+  is served per-request, so the merged frontend goes live the instant the merge completes,
+  while the Python keeps serving pre-merge code until the kickstart. Between the two,
+  production runs a NEW client against an OLD server. Observed 2026-08-07: the coverage UI
+  and the swipe/hover delete affordance were live against a server with no such routes —
+  bars silently absent, the delete button 404ing and restoring the row. Nothing destructive
+  only because the client's fallbacks were written for it.
+  So: **merge and kickstart together**, treat the gap as a live degraded window rather than
+  a safe pause, and **verify AFTER the restart, never after the merge** — a check run in the
+  gap tests a combination that will not exist a minute later.
 - **Test locally on the isolated worktree, never in the live checkout** — editing `static/` in
   the live checkout changes what testers see *instantly* (files are served per-request). Worktree:
   `~/development/voice-tutor-dev` (branch `local-dev`); `./dev.sh` runs uvicorn on `127.0.0.1:7861`
@@ -107,9 +125,12 @@ running `start.sh` on `0.0.0.0:7860`, exposed publicly via Tailscale Funnel
   from `~/development/voice-tutor`, so whatever branch is checked out there is what an unplanned
   restart (KeepAlive, reboot, crash) will serve — a half-finished feature branch included. Static
   files are worse than that: they are served per-request, so a branch checkout changes what a live
-  tester sees with no restart at all. Checking out a feature branch there to run the suite is fine;
-  leaving it there is not. Switch back to `main` when done. (Caught twice on 2026-08-06,
-  self-corrected both times.)
+  tester sees with no restart at all. **Create feature branches in a worktree, never with
+  `git checkout -b` in the live checkout** — `git worktree add ../voice-tutor-<name> -b <branch>`.
+  Running the suite against a briefly-checked-out branch is tolerable; creating one there is not,
+  because the branch then exists to be worked on in the wrong place. Switch back to `main`
+  immediately if it happens. (Caught twice on 2026-08-06 and once on 2026-08-07 — the third time
+  was creating the branch, which the older wording arguably permitted.)
 - **Rebase `local-dev` before trusting a local test.** The worktree is a branch, not a mirror: every
   merge to `main` leaves it further behind, and `dev.sh` happily serves the stale code with no
   warning that it's out of date. On 2026-08-02 it sat 4 commits behind — it would still have
