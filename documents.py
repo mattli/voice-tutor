@@ -64,6 +64,24 @@ class DocumentActionError(Exception):
 # out of the move itself rather than being enforced.
 ARCHIVE_DIRNAME = "_archive"
 
+# The preserved upload (the exact bytes the user sent) is stored HERE, in a
+# subdirectory, never beside the extracted text.
+#
+# This is structural, not cosmetic. ``_scan_documents`` finds documents by
+# globbing ``*.txt`` NON-RECURSIVELY, so anything inside a subdirectory is
+# invisible to it with no filter to keep in sync — the same property ``_archive``
+# relies on. Kept flat, an original that is ITSELF a ``.txt`` matches that glob
+# and the picker lists the document twice: once as ``<id>.txt`` and once as
+# ``<id>-<filename>.txt`` under a different id, with a wasted summary call for
+# the phantom. (Observed 2026-08-07; ``.txt`` is the only allowed extension that
+# collides, which is why it went unseen — every real upload so far was ``.md``.)
+#
+# The fix is the MOVE, not a smarter filter. Excluding ``<id>-*`` from the scan
+# would work today and drift the moment the id scheme or the allowed extensions
+# change; a subdirectory cannot be matched by a non-recursive glob no matter what
+# is named inside it.
+ORIGINALS_DIRNAME = "_originals"
+
 
 def _extract_text(filename: str, raw: bytes) -> str:
     ext = Path(filename).suffix.lower()
@@ -147,7 +165,12 @@ def save_upload(user_id: str, filename: str, raw: bytes) -> dict:
     d.mkdir(parents=True, exist_ok=True)
     doc_id = str(uuid.uuid4())
     safe_name = Path(filename).name
-    (d / f"{doc_id}-{safe_name}").write_bytes(raw)
+    # The preserved upload goes in _originals/, NEVER beside the extracted text —
+    # see ORIGINALS_DIRNAME for why the subdirectory is the fix rather than a
+    # smarter filter in the picker's scan.
+    originals_dir = d / ORIGINALS_DIRNAME
+    originals_dir.mkdir(parents=True, exist_ok=True)
+    (originals_dir / f"{doc_id}-{safe_name}").write_bytes(raw)
     (d / f"{doc_id}.txt").write_text(text)
 
     summary = _generate_summary(text)
@@ -160,6 +183,36 @@ def save_upload(user_id: str, filename: str, raw: bytes) -> dict:
         "char_count": len(text),
         "summary": summary,
     }
+
+
+def _original_for(d: Path, doc_id: str) -> Path | None:
+    """The preserved upload for ``doc_id`` inside directory ``d``, or None.
+
+    THE ONE PLACE that knows where an original lives, so the two layouts are
+    reconciled once instead of at every reader.
+
+    Prefers ``_originals/`` (everything written since 2026-08-07). Falls back to
+    the LEGACY flat ``<doc_id>-<filename>`` beside the extracted text, because
+    documents uploaded before that date were written that way and are NOT
+    migrated — moving a user's files to tidy a layout is not worth the risk when
+    a fallback costs one branch. Both layouts are therefore permanent, and this
+    function is where that fact lives.
+
+    The legacy branch still excludes ``.summary.txt``: a document that was
+    already duplicated by the phantom bug has a real summary sidecar named
+    ``<doc_id>-<filename>.summary.txt``, which matches the same glob.
+    """
+    doc_id = Path(doc_id).name
+    sub = d / ORIGINALS_DIRNAME
+    if sub.is_dir():
+        found = sorted(p for p in sub.glob(f"{doc_id}-*") if p.is_file())
+        if found:
+            return found[0]
+    legacy = sorted(
+        p for p in d.glob(f"{doc_id}-*")
+        if p.is_file() and not p.name.endswith(".summary.txt")
+    )
+    return legacy[0] if legacy else None
 
 
 def _scan_documents(d: Path) -> list[dict]:
@@ -178,8 +231,9 @@ def _scan_documents(d: Path) -> list[dict]:
     for txt_path in txt_paths:
         doc_id = txt_path.stem
         text = txt_path.read_text()
-        originals = [p for p in d.glob(f"{doc_id}-*") if p != txt_path and not p.name.endswith(".summary.txt")]
-        original = originals[0] if originals else txt_path
+        # The original carries the user's filename and the real upload time; the
+        # extracted text is the fallback when there is no original to read.
+        original = _original_for(d, doc_id) or txt_path
         display_name = original.name.removeprefix(f"{doc_id}-")
         summary_path = d / f"{doc_id}.summary.txt"
         summary = summary_path.read_text().strip() if summary_path.exists() else None
@@ -241,8 +295,8 @@ def _load_from_dir(d: Path, doc_id: str) -> tuple[str, str] | None:
     if not txt_path.exists():
         return None
     text = txt_path.read_text()
-    originals = [p for p in d.glob(f"{doc_id}-*") if p != txt_path]
-    original_name = originals[0].name.removeprefix(f"{doc_id}-") if originals else f"{doc_id}.txt"
+    original = _original_for(d, doc_id)
+    original_name = original.name.removeprefix(f"{doc_id}-") if original else f"{doc_id}.txt"
     return _derive_title(text, original_name), text
 
 
@@ -263,14 +317,34 @@ def _doc_files(d: Path, doc_id: str) -> list[Path]:
     document must never move another's files. Only the exact ``<doc_id>.txt``,
     ``<doc_id>.<suffix>`` and ``<doc_id>-<original name>`` forms this module
     actually writes are matched.
+
+    **THE ORIGINAL UPLOAD IS NOT IN THIS DIRECTORY.** Since 2026-08-07 it lives
+    in the ``_originals/`` subdirectory (see :data:`ORIGINALS_DIRNAME`), so the
+    flat glob above CANNOT see it. This function searches there too, and that is
+    load-bearing: this is the call site where getting it wrong fails SILENTLY.
+    Archiving would appear to succeed, the document would vanish from the picker,
+    and the user's original file would be left behind in the live directory —
+    "never deletes" would still be technically true while the archive was
+    quietly incomplete, and a later restore would bring back a document with no
+    original, losing its filename and upload date.
+
+    Paths are returned as-is; :func:`archive_document` mirrors each one's
+    position RELATIVE to the user directory into the archive folder, so an
+    original archives to ``<archive>/_originals/`` and :func:`restore_document`
+    puts it back where it came from without having to recognise it by name.
     """
     doc_id = Path(doc_id).name
-    return sorted(
-        p
-        for p in d.glob(f"{doc_id}*")
-        if p.is_file()
-        and (p.name == doc_id or p.name.startswith((f"{doc_id}.", f"{doc_id}-")))
-    )
+
+    def _matches(p: Path) -> bool:
+        return p.is_file() and (
+            p.name == doc_id or p.name.startswith((f"{doc_id}.", f"{doc_id}-"))
+        )
+
+    found = [p for p in d.glob(f"{doc_id}*") if _matches(p)]
+    originals = d / ORIGINALS_DIRNAME
+    if originals.is_dir():
+        found += [p for p in originals.glob(f"{doc_id}*") if _matches(p)]
+    return sorted(found)
 
 
 def archive_document(user_id: str, doc_id: str, *, stamp: str | None = None) -> dict:
@@ -306,8 +380,17 @@ def archive_document(user_id: str, doc_id: str, *, stamp: str | None = None) -> 
     target.mkdir(parents=True, exist_ok=True)
     moved = []
     for path in _doc_files(own, safe_id):
-        path.rename(target / path.name)
-        moved.append(path.name)
+        # Mirror the file's position relative to the user directory, so an
+        # original archives to <archive>/_originals/ rather than being flattened
+        # in beside the extracted text. The archive folder then RECORDS where
+        # each file belongs and restore can put it back without recognising it
+        # by name — the same reason the original moved out of the flat directory
+        # in the first place.
+        rel = path.relative_to(own)
+        dest = target / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        path.rename(dest)
+        moved.append(str(rel))
     return {"document_id": safe_id, "archived_at": stamp, "files": moved}
 
 
@@ -339,10 +422,21 @@ def restore_document(user_id: str, doc_id: str) -> dict:
         raise DocumentActionError(409, "a document with that id is already live")
     own.mkdir(parents=True, exist_ok=True)
     restored = []
-    for path in sorted(source.glob("*")):
+    # rglob, not glob: the archive folder mirrors the live layout, so an original
+    # sits under _originals/ inside it. A flat scan would leave it behind and
+    # restore a document with no original — no filename, no upload date.
+    for path in sorted(source.rglob("*")):
         if path.is_file():
-            path.rename(own / path.name)
-            restored.append(path.name)
+            rel = path.relative_to(source)
+            dest = own / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            path.rename(dest)
+            restored.append(str(rel))
+    # Prune the emptied folder, deepest first, so _originals/ goes before its parent.
+    for d_ in sorted((p for p in source.rglob("*") if p.is_dir()),
+                     key=lambda p: len(p.parts), reverse=True):
+        if not any(d_.iterdir()):
+            d_.rmdir()
     if not any(source.iterdir()):
         source.rmdir()
     return {"document_id": safe_id, "files": restored}

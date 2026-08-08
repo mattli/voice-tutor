@@ -36,7 +36,11 @@ def test_save_upload_redirects_into_tmp_path(docs_dir):
     result = save_upload("matt", "a.md", b"# Doc One\nbody")
     doc_id = result["document_id"]
     assert (docs_dir / "matt" / f"{doc_id}.txt").exists()
-    assert (docs_dir / "matt" / f"{doc_id}-a.md").exists()
+    # The preserved original lives in _originals/, never beside the extracted
+    # text — a flat original that is itself a .txt would be scanned as its own
+    # document (see documents.ORIGINALS_DIRNAME).
+    assert (docs_dir / "matt" / documents.ORIGINALS_DIRNAME / f"{doc_id}-a.md").exists()
+    assert not (docs_dir / "matt" / f"{doc_id}-a.md").exists()
     # Returned metadata shape + values (verbatim current behavior).
     assert sorted(result.keys()) == ["char_count", "document_id", "summary", "title"]
     assert result["title"] == "Doc One"
